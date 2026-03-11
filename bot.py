@@ -1,62 +1,136 @@
 #!/usr/bin/env python3
-"""
-Telegram bot for NYC MTA real-time subway arrivals.
-
-Install dependencies:
-    pip install -r requirements.txt
-
-Environment variables required:
-    TELEGRAM_BOT_TOKEN
-    MTA_API_KEY
-"""
+"""Production-ready Telegram bot for NYC MTA real-time subway arrivals."""
 
 import logging
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
-from zoneinfo import ZoneInfo
+from typing import Dict, List, Tuple
 
+import pytz
 import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# NYC local timezone for human-readable timestamps.
-NYC_TZ = ZoneInfo("America/New_York")
+# Configure logger format for cloud/runtime observability.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("subway_bot")
 
-# MTA feed mapping by train line.
-TRAIN_FEED_MAP: Dict[str, str] = {
-    "A": "gtfs-ace",
-    "C": "gtfs-ace",
-    "E": "gtfs-ace",
-    "B": "gtfs-bdfm",
-    "D": "gtfs-bdfm",
-    "F": "gtfs-bdfm",
-    "M": "gtfs-bdfm",
-    "G": "gtfs-g",
-    "J": "gtfs-jz",
-    "Z": "gtfs-jz",
-    "N": "gtfs-nqrw",
-    "Q": "gtfs-nqrw",
-    "R": "gtfs-nqrw",
-    "W": "gtfs-nqrw",
-    "L": "gtfs-l",
-    "1": "gtfs",
-    "2": "gtfs",
-    "3": "gtfs",
-    "4": "gtfs",
-    "5": "gtfs",
-    "6": "gtfs",
-    "7": "gtfs-7",
-    "S": "gtfs-si",
+NYC_TZ = pytz.timezone("America/New_York")
+
+# Official MTA GTFS-RT feeds by line.
+TRAIN_FEEDS: Dict[str, str] = {
+    "A": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+    "C": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+    "E": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+    "B": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+    "D": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+    "F": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+    "M": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
+    "G": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
+    "J": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
+    "Z": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
+    "N": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "Q": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "R": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "W": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
+    "1": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "2": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "3": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "4": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "5": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
 
-MTA_FEED_BASE_URL = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2F"
+# User-friendly station codes requested by product requirements.
+IMPORTANT_STATIONS: Dict[str, Dict[str, str]] = {
+    "Manhattan": {
+        "TS42": "Times Square 42 St",
+        "HS34": "Herald Square 34 St",
+        "US14": "Union Square 14 St",
+        "GC42": "Grand Central 42 St",
+        "CS59": "Columbus Circle 59 St",
+        "LP66": "Lincoln Center 66 St",
+        "CP72": "Central Park West 72 St",
+        "FS": "Fulton Street",
+        "WS4": "West 4 St",
+        "ASTOR": "Astor Place",
+        "CANAL": "Canal Street",
+        "CHAM": "Chambers Street",
+        "BATPK": "Battery Park",
+        "8NYU": "8 St NYU",
+        "WH": "Whitehall Street",
+        "WTC": "WTC Cortlandt",
+    },
+    "Brooklyn": {
+        "AABC": "Atlantic Ave Barclays Center",
+        "JAY": "Jay St MetroTech",
+        "DEK": "DeKalb Ave",
+        "BRA": "Bay Ridge Ave",
+        "BDWY": "Broadway Junction",
+        "MYRT": "Myrtle Ave",
+        "BED": "Bedford Ave",
+        "WKOS": "Wilson Ave",
+        "FLAT": "Flatbush Ave Brooklyn College",
+        "PROS": "Prospect Park",
+        "7AVB": "7 Ave Brooklyn",
+        "9STB": "9 St Brooklyn",
+        "CHCH": "Church Ave",
+        "KNGS": "Kings Highway",
+        "UTIC": "Utica Ave",
+        "FRKL": "Franklin Ave",
+        "CI": "Coney Island",
+    },
+}
+
+# Station alias -> MTA stop prefix. Prefix matching handles direction suffixes (N/S).
+STATION_ALIAS_TO_STOP_ID: Dict[str, str] = {
+    "HS34": "D17",
+    "TS42": "R16",
+    "US14": "R20",
+    "GC42": "631",
+    "CS59": "A24",
+    "LP66": "127",
+    "CP72": "A22",
+    "FS": "A38",
+    "WS4": "A32",
+    "ASTOR": "635",
+    "CANAL": "R31",
+    "CHAM": "A36",
+    "BATPK": "R27",
+    "8NYU": "R21",
+    "WH": "R26",
+    "WTC": "A55",
+    "AABC": "D24",
+    "JAY": "A41",
+    "DEK": "R30",
+    "BRA": "R41",
+    "BDWY": "A51",
+    "MYRT": "M11",
+    "BED": "L05",
+    "WKOS": "L01",
+    "FLAT": "247",
+    "PROS": "D43",
+    "7AVB": "D25",
+    "9STB": "F21",
+    "CHCH": "D28",
+    "KNGS": "D35",
+    "UTIC": "A65",
+    "FRKL": "S03",
+    "CI": "D43",
+}
+
+VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,Z,N,Q,R,W,1,2,3,4,5,6,7"
 
 
 def direction_from_stop_id(stop_id: str) -> str:
-    """Convert stop suffix to user-friendly direction."""
+    """Infer train direction from stop suffix."""
     if stop_id.endswith("N"):
         return "Uptown"
     if stop_id.endswith("S"):
@@ -64,213 +138,216 @@ def direction_from_stop_id(stop_id: str) -> str:
     return "Unknown"
 
 
-def parse_service_alerts(feed: gtfs_realtime_pb2.FeedMessage, train: str, station_id: str) -> List[str]:
-    """Extract alert text that appears relevant to the selected train/station."""
-    alerts: List[str] = []
-    for entity in feed.entity:
-        if not entity.HasField("alert"):
-            continue
-
-        informed = entity.alert.informed_entity
-        relevant = False
-        if not informed:
-            relevant = True
-        else:
-            for informed_entity in informed:
-                route_match = (
-                    not informed_entity.route_id
-                    or informed_entity.route_id.upper() == train
-                )
-                stop_match = (
-                    not informed_entity.stop_id
-                    or informed_entity.stop_id.startswith(station_id)
-                )
-                if route_match and stop_match:
-                    relevant = True
-                    break
-
-        if not relevant:
-            continue
-
-        if entity.alert.header_text.translation:
-            text = entity.alert.header_text.translation[0].text
-            if text:
-                alerts.append(text)
-
-    return alerts
-
-
-def fetch_mta_updates(train: str, station_id: str) -> Dict[str, object]:
+def fetch_mta_updates(train: str, station_code: str) -> Dict[str, object]:
     """
-    Fetch and parse MTA GTFS-RT updates for a train/station.
+    Fetch upcoming arrivals for a train and user-friendly station code.
 
-    Returns a dictionary with either:
-      - {"ok": True, "arrivals": [...], "alerts": [...]}
-      - {"ok": False, "error": "..."}
+    Responsibilities:
+      - validate inputs
+      - call MTA GTFS-RT feed
+      - parse protobuf TripUpdates/StopTimeUpdates
+      - return next arrivals and optional alerts
     """
-    normalized_train = train.upper()
-    normalized_station = station_id.strip().upper()
+    train = train.upper().strip()
+    station_code = station_code.upper().strip()
 
-    if normalized_train not in TRAIN_FEED_MAP:
-        valid = ", ".join(sorted(TRAIN_FEED_MAP.keys()))
-        return {"ok": False, "error": f"Invalid train line '{train}'. Valid options: {valid}"}
+    # Validate train first so users get immediate feedback.
+    if train not in TRAIN_FEEDS:
+        return {
+            "ok": False,
+            "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
+        }
+
+    # Validate station code and map to stop_id prefix.
+    if station_code not in STATION_ALIAS_TO_STOP_ID:
+        return {
+            "ok": False,
+            "error": "Invalid station code. Use /stationid to see supported codes.",
+        }
 
     api_key = os.getenv("MTA_API_KEY")
     if not api_key:
-        return {"ok": False, "error": "MTA_API_KEY environment variable is not set."}
+        return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
-    feed_name = TRAIN_FEED_MAP[normalized_train]
-    feed_url = f"{MTA_FEED_BASE_URL}{feed_name}"
+    stop_id_prefix = STATION_ALIAS_TO_STOP_ID[station_code]
+    feed_url = TRAIN_FEEDS[train]
+    logger.info("Fetching MTA feed for train=%s station_code=%s url=%s", train, station_code, feed_url)
 
     try:
-        response = requests.get(feed_url, headers={"x-api-key": api_key}, timeout=20)
+        response = requests.get(feed_url, headers={"x-api-key": api_key}, timeout=15)
         response.raise_for_status()
+    except requests.Timeout:
+        logger.exception("MTA API timeout for train=%s", train)
+        return {"ok": False, "error": "MTA API timeout. Please try again in a moment."}
     except requests.RequestException as exc:
-        return {"ok": False, "error": f"Error calling MTA API: {exc}"}
+        logger.exception("MTA API request failed: %s", exc)
+        return {"ok": False, "error": "MTA API request failed. Please try again later."}
 
     feed = gtfs_realtime_pb2.FeedMessage()
     try:
         feed.ParseFromString(response.content)
-    except Exception as exc:  # protobuf parsing error
-        return {"ok": False, "error": f"Could not parse GTFS-RT feed: {exc}"}
+    except Exception as exc:
+        logger.exception("Failed to parse protobuf feed: %s", exc)
+        return {"ok": False, "error": "Could not parse MTA feed response."}
 
-    now_utc = datetime.now(tz=ZoneInfo("UTC"))
-    arrivals: List[Dict[str, str]] = []
-    found_any_stop_prefix = False
+    now = datetime.now(tz=NYC_TZ)
+    arrivals: List[Tuple[int, str, str]] = []
 
     for entity in feed.entity:
         if not entity.HasField("trip_update"):
             continue
 
         trip_update = entity.trip_update
-        route_id = trip_update.trip.route_id.upper() if trip_update.trip.route_id else ""
-        if route_id != normalized_train:
+        if not trip_update.trip.route_id or trip_update.trip.route_id.upper() != train:
             continue
 
-        for stop_time_update in trip_update.stop_time_update:
-            stop_id = stop_time_update.stop_id.upper()
-            if stop_id.startswith(normalized_station):
-                found_any_stop_prefix = True
-            if not stop_id.startswith(normalized_station):
+        for stu in trip_update.stop_time_update:
+            stop_id = stu.stop_id.upper() if stu.stop_id else ""
+            if not stop_id.startswith(stop_id_prefix):
                 continue
 
-            if not stop_time_update.HasField("arrival"):
+            if not stu.HasField("arrival") or stu.arrival.time <= 0:
                 continue
 
-            arrival_ts = stop_time_update.arrival.time
-            if arrival_ts <= 0:
+            arrival_dt = datetime.fromtimestamp(stu.arrival.time, tz=NYC_TZ)
+            minutes = int((arrival_dt - now).total_seconds() // 60)
+            if minutes < 0:
                 continue
 
-            arrival_dt = datetime.fromtimestamp(arrival_ts, tz=ZoneInfo("UTC")).astimezone(NYC_TZ)
-            minutes_away = int((arrival_dt.astimezone(ZoneInfo("UTC")) - now_utc).total_seconds() // 60)
-            if minutes_away < 0:
-                continue
+            arrivals.append((minutes, direction_from_stop_id(stop_id), arrival_dt.strftime("%I:%M %p")))
 
-            delay_seconds: Optional[int] = None
-            if stop_time_update.arrival.HasField("delay"):
-                delay_seconds = stop_time_update.arrival.delay
-            elif trip_update.HasField("delay"):
-                delay_seconds = trip_update.delay
+    arrivals.sort(key=lambda row: row[0])
 
-            arrivals.append(
-                {
-                    "stop_id": stop_id,
-                    "direction": direction_from_stop_id(stop_id),
-                    "minutes": str(minutes_away),
-                    "arrival_time": arrival_dt.strftime("%I:%M %p"),
-                    "delay": str(delay_seconds) if delay_seconds is not None else "0",
-                }
-            )
-
-    arrivals.sort(key=lambda item: int(item["minutes"]))
-    alerts = parse_service_alerts(feed, normalized_train, normalized_station)
+    # Best-effort alert extraction from same feed when alert entities are present.
+    alerts: List[str] = []
+    for entity in feed.entity:
+        if not entity.HasField("alert"):
+            continue
+        if entity.alert.header_text.translation:
+            text = entity.alert.header_text.translation[0].text.strip()
+            if text:
+                alerts.append(text)
 
     if not arrivals:
-        if not found_any_stop_prefix:
-            return {
-                "ok": False,
-                "error": (
-                    f"No matching stop updates found for station '{station_id}'. "
-                    "Please verify the station ID."
-                ),
-            }
         return {
             "ok": False,
-            "error": "No upcoming arrivals currently available for that train/station.",
+            "error": "No upcoming arrivals found for that train at this station right now.",
         }
 
-    return {"ok": True, "arrivals": arrivals[:3], "alerts": alerts[:3]}
+    station_name = next(
+        (name for group in IMPORTANT_STATIONS.values() for code, name in group.items() if code == station_code),
+        station_code,
+    )
+
+    return {
+        "ok": True,
+        "station_name": station_name,
+        "arrivals": arrivals[:2],  # Return next 2 arrivals as requested.
+        "alerts": alerts[:2],
+    }
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send welcome and quick-start guidance."""
+    del context
+    message = (
+        "*NYC Subway Arrival Bot*\n\n"
+        "*Commands*\n"
+        "• /next <train> <station_code>\n"
+        "• /stationid\n"
+        "• /help\n\n"
+        "*Example*\n"
+        "/next D HS34"
+    )
+    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Explain command usage and station-code model."""
+    del context
+    message = (
+        "*How this bot works*\n\n"
+        "Commands:\n"
+        "• /start - welcome message\n"
+        "• /help - usage guide\n"
+        "• /stationid - supported station codes\n"
+        "• /next <train> <station_code> - next arrivals\n\n"
+        "Train examples: A, D, Q, 2, 7\n"
+        "Station codes are short aliases such as HS34, TS42, GC42.\n"
+        "Use /stationid to browse all supported station codes."
+    )
+    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+
+async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Display important station codes grouped by borough."""
+    del context
+    lines = ["*Important Stations*", ""]
+    for borough, stations in IMPORTANT_STATIONS.items():
+        lines.append(f"*{borough}*")
+        for code, name in stations.items():
+            lines.append(f"• {code} → {name}")
+        lines.append("")
+
+    await update.message.reply_text("\n".join(lines).strip(), parse_mode=ParseMode.MARKDOWN)
 
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /next <train> <station_id> command."""
+    """Handle /next <train> <station_code> requests."""
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
-            "Usage: /next <train> <station_id>\nExample: /next D 635"
+            "Missing parameters. Usage: /next <train> <station_code>\nExample: /next D HS34"
         )
         return
 
     train = context.args[0]
-    station_id = context.args[1]
-    logging.info("/next requested: train=%s station_id=%s", train, station_id)
+    station_code = context.args[1]
+    logger.info("User requested /next train=%s station_code=%s", train, station_code)
 
-    result = fetch_mta_updates(train, station_id)
+    result = fetch_mta_updates(train, station_code)
     if not result["ok"]:
-        await update.message.reply_text(f"⚠️ {result['error']}")
+        await update.message.reply_text(str(result["error"]))
         return
 
-    arrivals = result["arrivals"]
-    alerts = result["alerts"]
-
     lines = [
-        "<b>🚇 NYC Subway Arrival Update</b>",
-        f"<b>Train:</b> {train.upper()}",
-        f"<b>Station ID:</b> {station_id.upper()}",
+        f"*{train.upper()} Train Arrival*",
         "",
-        "<b>Next Arrivals</b>",
+        f"*Station:* {result['station_name']}",
+        "",
+        "*Next Trains*",
     ]
 
-    for arrival in arrivals:
-        delay_text = "On time"
-        delay_seconds = int(arrival["delay"])
-        if delay_seconds > 0:
-            delay_text = f"Delayed by {delay_seconds // 60} min"
+    for minutes, direction, local_time in result["arrivals"]:
+        lines.append(f"• {direction} → {minutes} minutes ({local_time})")
 
-        lines.extend(
-            [
-                f"• {arrival['minutes']} min ({arrival['arrival_time']})",
-                f"  - Direction: {arrival['direction']}",
-                f"  - Status: {delay_text}",
-            ]
-        )
+    lines.append("")
+    lines.append("*Service Status*")
 
-    if alerts:
-        lines.append("")
-        lines.append("<b>Service Alerts</b>")
-        for alert in alerts:
+    if result["alerts"]:
+        for alert in result["alerts"]:
             lines.append(f"• {alert}")
+    else:
+        lines.append("• No delays reported")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 def main() -> None:
-    """Start the Telegram bot application."""
+    """Initialize and run the Telegram bot."""
     load_dotenv()
-
     token = os.getenv("TELEGRAM_BOT_TOKEN")
+
     if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN environment variable is not set.")
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
-    logging.info("Starting SubwayCatch bot...")
-
+    logger.info("Starting NYC Subway Arrival Bot")
     app = Application.builder().token(token).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stationid", stationid_command))
     app.add_handler(CommandHandler("next", next_train))
 
-    logging.info("Bot started. Waiting for /next commands...")
     app.run_polling(drop_pending_updates=True)
 
 

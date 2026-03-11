@@ -1,37 +1,48 @@
-# SubwayCatch Telegram Bot
+# NYC Subway Arrival Telegram Bot
 
-Telegram bot that returns real-time NYC MTA subway arrivals via:
+A production-ready Telegram bot that returns real-time NYC subway arrivals using MTA GTFS-Realtime feeds.
 
-```text
-/next <train> <station_id>
-```
+## Features
+- `/start` welcome message
+- `/help` usage instructions
+- `/stationid` station-code directory (grouped by borough)
+- `/next <train> <station_code>` for next 2 arrivals
+- Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
 
-Example:
+## Requirements
+- Python 3.10+
+- Telegram bot token
+- MTA API key
 
-```text
-/next D 635
-```
-
-## 1) Setup
-
+## Installation
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-Add values for:
-- `TELEGRAM_BOT_TOKEN`
-- `MTA_API_KEY`
+## Environment Variables
+Set these in your shell or `.env` file:
 
-## 2) Run
+```bash
+export TELEGRAM_BOT_TOKEN="your_token"
+export MTA_API_KEY="your_mta_api_key"
+```
 
+## Run Locally
 ```bash
 python3 bot.py
 ```
 
-## Notes
-- Train lines are validated dynamically from a mapping in `bot.py`.
-- Station IDs are user-provided and not hardcoded.
-- GTFS-RT protobuf parsing uses `gtfs-realtime-bindings`.
+## Deploy to Cloud
+The bot is stateless and uses polling, so it can run on platforms like Render, Railway, Fly.io, or a VM.
+
+1. Provision a Python service/container.
+2. Install dependencies with `pip install -r requirements.txt`.
+3. Set `TELEGRAM_BOT_TOKEN` and `MTA_API_KEY` in environment settings.
+4. Start command: `python3 bot.py`.
+
+## Example Usage
+- `/next D HS34`
+- `/next A WTC`
+- `/stationid`
