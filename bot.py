@@ -12,8 +12,8 @@ import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
 from telegram import Update
-from telegram.constants import ParseMode
 from telegram.error import NetworkError, TimedOut
+from html import escape
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Configure logger format for cloud/runtime observability.
@@ -253,45 +253,45 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Send welcome and quick-start guidance."""
     del context
     message = (
-        "*NYC Subway Arrival Bot*\n\n"
-        "*Commands*\n"
-        "• /next <train> <station_code>\n"
+        "<b>NYC Subway Arrival Bot</b>\n\n"
+        "<b>Commands</b>\n"
+        "• /next &lt;train&gt; &lt;station_code&gt;\n"
         "• /stationid\n"
         "• /help\n\n"
-        "*Example*\n"
+        "<b>Example</b>\n"
         "/next D HS34"
     )
-    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(message, parse_mode="HTML")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Explain command usage and station-code model."""
     del context
     message = (
-        "*How this bot works*\n\n"
+        "<b>How this bot works</b>\n\n"
         "Commands:\n"
         "• /start - welcome message\n"
         "• /help - usage guide\n"
         "• /stationid - supported station codes\n"
-        "• /next <train> <station_code> - next arrivals\n\n"
+        "• /next &lt;train&gt; &lt;station_code&gt; - next arrivals\n\n"
         "Train examples: A, D, Q, 2, 7\n"
         "Station codes are short aliases such as HS34, TS42, GC42.\n"
         "Use /stationid to browse all supported station codes."
     )
-    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(message, parse_mode="HTML")
 
 
 async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Display important station codes grouped by borough."""
     del context
-    lines = ["*Important Stations*", ""]
+    lines = ["<b>Important Stations</b>", ""]
     for borough, stations in IMPORTANT_STATIONS.items():
-        lines.append(f"*{borough}*")
+        lines.append(f"<b>{escape(borough)}</b>")
         for code, name in stations.items():
-            lines.append(f"• {code} → {name}")
+            lines.append(f"• {escape(code)} → {escape(name)}")
         lines.append("")
 
-    await update.message.reply_text("\n".join(lines).strip(), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
 
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -312,26 +312,28 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     lines = [
-        f"*{train.upper()} Train Arrival*",
+        f"<b>{escape(train.upper())} Train Arrival</b>",
         "",
-        f"*Station:* {result['station_name']}",
+        f"<b>Station:</b> {escape(str(result['station_name']))}",
         "",
-        "*Next Trains*",
+        "<b>Next Trains</b>",
     ]
 
     for minutes, direction, local_time in result["arrivals"]:
-        lines.append(f"• {direction} → {minutes} minutes ({local_time})")
+        lines.append(
+            f"• {escape(direction)} → {int(minutes)} minutes ({escape(local_time)})"
+        )
 
     lines.append("")
-    lines.append("*Service Status*")
+    lines.append("<b>Service Status</b>")
 
     if result["alerts"]:
         for alert in result["alerts"]:
-            lines.append(f"• {alert}")
+            lines.append(f"• {escape(alert)}")
     else:
         lines.append("• No delays reported")
 
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 def main() -> None:
