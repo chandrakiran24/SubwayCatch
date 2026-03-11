@@ -42,6 +42,14 @@ The bot is stateless and uses polling, so it can run on platforms like Render, R
 3. Set `TELEGRAM_BOT_TOKEN` and `MTA_API_KEY` in environment settings.
 4. Start command: `python3 bot.py`.
 
+### Startup reliability on cloud platforms
+If Telegram is temporarily unreachable during deploy/startup, the bot now retries startup automatically instead of crashing.
+
+Optional env vars:
+
+- `BOT_STARTUP_RETRY_DELAY_SECONDS` (default: `10`)
+- `BOT_STARTUP_MAX_RETRIES` (default: `0`, meaning infinite retries)
+
 ## Example Usage
 - `/next D HS34`
 - `/next A WTC`

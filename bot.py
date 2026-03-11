@@ -3,6 +3,7 @@
 
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Configure logger format for cloud/runtime observability.
@@ -340,15 +342,35 @@ def main() -> None:
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
 
-    logger.info("Starting NYC Subway Arrival Bot")
-    app = Application.builder().token(token).build()
+    retry_delay_seconds = int(os.getenv("BOT_STARTUP_RETRY_DELAY_SECONDS", "10"))
+    max_retries = int(os.getenv("BOT_STARTUP_MAX_RETRIES", "0"))
+    # BOT_STARTUP_MAX_RETRIES=0 means retry forever.
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stationid", stationid_command))
-    app.add_handler(CommandHandler("next", next_train))
+    attempt = 0
+    while True:
+        attempt += 1
+        logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
 
-    app.run_polling(drop_pending_updates=True)
+        app = Application.builder().token(token).build()
+        app.add_handler(CommandHandler("start", start_command))
+        app.add_handler(CommandHandler("help", help_command))
+        app.add_handler(CommandHandler("stationid", stationid_command))
+        app.add_handler(CommandHandler("next", next_train))
+
+        try:
+            app.run_polling(drop_pending_updates=True)
+            logger.info("Bot polling stopped gracefully.")
+            break
+        except (TimedOut, NetworkError):
+            logger.exception(
+                "Telegram API was temporarily unreachable during startup/polling. "
+                "Retrying in %s seconds.",
+                retry_delay_seconds,
+            )
+            if max_retries > 0 and attempt >= max_retries:
+                logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
+                raise
+            time.sleep(retry_delay_seconds)
 
 
 if __name__ == "__main__":
