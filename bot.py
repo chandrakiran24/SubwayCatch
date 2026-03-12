@@ -130,7 +130,7 @@ STATION_ALIAS_TO_STOP_ID: Dict[str, str] = {
     "CI": "D43",
 }
 
-VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,Z,N,Q,R,W,1,2,3,4,5,6,7"
+VALID_DIRECTION_TEXT = "uptown,downtown,both"
 
 
 def direction_from_stop_id(stop_id: str) -> str:
@@ -388,6 +388,7 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
+        f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
         "",
     ]
 
