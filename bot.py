@@ -178,16 +178,10 @@ def start_health_server() -> None:
     thread.start()
 
 
-def fetch_mta_updates(station_code: str, direction_filter: str = "both") -> Dict[str, object]:
-    """Fetch upcoming arrivals for all trains at a station, optionally filtered by direction."""
+def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, object]:
+    """Fetch upcoming arrivals for a station, optionally filtered to one train line."""
     station_code = station_code.upper().strip()
-    direction_filter = direction_filter.lower().strip()
-
-    if direction_filter not in {"uptown", "downtown", "both"}:
-        return {
-            "ok": False,
-            "error": f"Invalid direction. Use {VALID_DIRECTION_TEXT}.",
-        }
+    train_filter = train_filter.upper().strip()
 
     if station_code not in STATION_ALIAS_TO_STOP_ID:
         return {
@@ -195,13 +189,20 @@ def fetch_mta_updates(station_code: str, direction_filter: str = "both") -> Dict
             "error": "Invalid station code. Use /stationid to see supported codes.",
         }
 
+    if train_filter and train_filter not in TRAIN_FEEDS:
+        return {
+            "ok": False,
+            "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
+        }
+
     api_key = os.getenv("MTA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
     stop_id_prefix = STATION_ALIAS_TO_STOP_ID[station_code]
-    feed_urls: List[str] = sorted(set(TRAIN_FEEDS.values()))
-    logger.info("Fetching MTA feeds for station_code=%s direction=%s", station_code, direction_filter)
+    feed_urls: List[str] = [TRAIN_FEEDS[train_filter]] if train_filter else sorted(set(TRAIN_FEEDS.values()))
+
+    logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
 
     now = datetime.now(tz=NYC_TZ)
     arrivals: List[Tuple[int, str, str, str]] = []
@@ -233,6 +234,8 @@ def fetch_mta_updates(station_code: str, direction_filter: str = "both") -> Dict
             train = trip_update.trip.route_id.upper().strip() if trip_update.trip.route_id else ""
             if train not in TRAIN_FEEDS:
                 continue
+            if train_filter and train != train_filter:
+                continue
 
             for stu in trip_update.stop_time_update:
                 stop_id = stu.stop_id.upper() if stu.stop_id else ""
@@ -241,8 +244,6 @@ def fetch_mta_updates(station_code: str, direction_filter: str = "both") -> Dict
 
                 direction = direction_from_stop_id(stop_id)
                 if direction == "Unknown":
-                    continue
-                if direction_filter != "both" and direction.lower() != direction_filter:
                     continue
 
                 if not stu.HasField("arrival") or stu.arrival.time <= 0:
@@ -266,7 +267,7 @@ def fetch_mta_updates(station_code: str, direction_filter: str = "both") -> Dict
     if not arrivals:
         return {
             "ok": False,
-            "error": "No upcoming arrivals found for this station right now.",
+            "error": "No upcoming arrivals found for this request right now.",
         }
 
     station_name = next(
@@ -293,7 +294,7 @@ def fetch_mta_updates(station_code: str, direction_filter: str = "both") -> Dict
         "ok": True,
         "station_name": station_name,
         "station_code": station_code,
-        "direction_filter": direction_filter,
+        "train_filter": train_filter,
         "uptown_by_train": dict(sorted(uptown_by_train.items())),
         "downtown_by_train": dict(sorted(downtown_by_train.items())),
         "alerts": sorted(alert_set)[:3],
@@ -306,12 +307,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = (
         "<b>NYC Subway Arrival Bot</b>\n\n"
         "<b>Commands</b>\n"
-        "• /next &lt;station_code&gt; [uptown|downtown|both]\n"
+        "• /next &lt;station_code&gt;\n"
+        "• /next &lt;train&gt; &lt;station_code&gt;\n"
         "• /stationid\n"
         "• /help\n\n"
         "<b>Examples</b>\n"
         "/next HS34\n"
-        "/next CI uptown"
+        "/next D HS34"
     )
     await update.message.reply_text(message, parse_mode="HTML")
 
@@ -325,8 +327,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /start - welcome message\n"
         "• /help - usage guide\n"
         "• /stationid - supported station codes\n"
-        "• /next &lt;station_code&gt; [uptown|downtown|both] - next arrivals\n\n"
-        "Direction is optional and defaults to both.\n"
+        "• /next &lt;station_code&gt; - all trains at station, both directions\n"
+        "• /next &lt;train&gt; &lt;station_code&gt; - one train at station, both directions\n\n"
+        "Train examples: A, D, Q, 2, 7\n"
         "Station codes are short aliases such as HS34, TS42, GC42.\n"
         "Use /stationid to browse all supported station codes."
     )
@@ -347,60 +350,71 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /next <station_code> [direction] requests."""
+    """Handle /next <station_code> or /next <train> <station_code> requests."""
     if not context.args:
         await update.message.reply_text(
-            "Missing parameters. Usage: /next <station_code> [uptown|downtown|both]\n"
-            "Examples: /next HS34  or  /next CI uptown"
+            "Missing parameters. Usage:\n"
+            "/next <station_code>\n"
+            "/next <train> <station_code>\n"
+            "Examples: /next HS34  or  /next D HS34"
         )
         return
 
-    station_code = context.args[0]
-    direction_filter = context.args[1] if len(context.args) > 1 else "both"
-    logger.info("User requested /next station_code=%s direction=%s", station_code, direction_filter)
+    train_filter = ""
+    station_code = ""
 
-    result = fetch_mta_updates(station_code, direction_filter)
+    if len(context.args) == 1:
+        station_code = context.args[0]
+    elif len(context.args) == 2:
+        train_filter = context.args[0]
+        station_code = context.args[1]
+    else:
+        await update.message.reply_text(
+            "Invalid parameters. Usage:\n"
+            "/next <station_code>\n"
+            "/next <train> <station_code>"
+        )
+        return
+
+    logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
+
+    result = fetch_mta_updates(station_code, train_filter)
     if not result["ok"]:
         await update.message.reply_text(str(result["error"]))
         return
 
+    title = "Station Arrivals" if not result["train_filter"] else f"{result['train_filter']} Train Arrival"
     lines = [
-        "<b>Station Arrivals</b>",
+        f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
         f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
         "",
     ]
 
-    show_uptown = result["direction_filter"] in {"uptown", "both"}
-    show_downtown = result["direction_filter"] in {"downtown", "both"}
+    lines.append("<b>Uptown (next 2 per train)</b>")
+    if result["uptown_by_train"]:
+        for train, arrivals in result["uptown_by_train"].items():
+            formatted = ", ".join(
+                f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
+            )
+            lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+    else:
+        lines.append("• No upcoming uptown trains")
 
-    if show_uptown:
-        lines.append("<b>Uptown (next 2 per train)</b>")
-        if result["uptown_by_train"]:
-            for train, arrivals in result["uptown_by_train"].items():
-                formatted = ", ".join(
-                    f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
-                )
-                lines.append(f"• <b>{escape(train)}</b>: {formatted}")
-        else:
-            lines.append("• No upcoming uptown trains")
-        lines.append("")
+    lines.append("")
+    lines.append("<b>Downtown (next 2 per train)</b>")
+    if result["downtown_by_train"]:
+        for train, arrivals in result["downtown_by_train"].items():
+            formatted = ", ".join(
+                f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
+            )
+            lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+    else:
+        lines.append("• No upcoming downtown trains")
 
-    if show_downtown:
-        lines.append("<b>Downtown (next 2 per train)</b>")
-        if result["downtown_by_train"]:
-            for train, arrivals in result["downtown_by_train"].items():
-                formatted = ", ".join(
-                    f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
-                )
-                lines.append(f"• <b>{escape(train)}</b>: {formatted}")
-        else:
-            lines.append("• No upcoming downtown trains")
-        lines.append("")
-
+    lines.append("")
     lines.append("<b>Service Status</b>")
-
     if result["alerts"]:
         for alert in result["alerts"]:
             lines.append(f"• {escape(alert)}")
