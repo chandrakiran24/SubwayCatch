@@ -61,3 +61,8 @@ If you deploy this bot as a **Render Web Service**, Render requires the process 
 The bot now starts a lightweight health server automatically when `PORT` is set, so `python3 bot.py` works on Render web services while polling Telegram updates.
 
 If you prefer not to expose an HTTP port at all, deploy as a **Background Worker** instead.
+
+
+### Telegram polling conflict troubleshooting
+If logs show `Conflict: terminated by other getUpdates request`, more than one bot instance is polling the same token.
+Ensure only one active bot process/web service/worker is running for that Telegram bot token.

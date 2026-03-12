@@ -14,7 +14,7 @@ import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
 from telegram import Update
-from telegram.error import NetworkError, TimedOut
+from telegram.error import Conflict, NetworkError, TimedOut
 from html import escape
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -383,7 +383,8 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(str(result["error"]))
         return
 
-    title = "Station Arrivals" if not result["train_filter"] else f"{result['train_filter']} Train Arrival"
+    train_scope = str(result.get("train_filter", "")).upper()
+    title = "Station Arrivals" if not train_scope else f"{train_scope} Train Arrival"
     lines = [
         f"<b>{escape(title)}</b>",
         "",
@@ -424,6 +425,16 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+
+async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log uncaught handler errors without crashing update processing."""
+    logger.exception("Unhandled exception while processing update", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "Sorry, something went wrong while processing your request. Please try again."
+        )
+
 def main() -> None:
     """Initialize and run the Telegram bot."""
     load_dotenv()
@@ -448,14 +459,15 @@ def main() -> None:
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("stationid", stationid_command))
         app.add_handler(CommandHandler("next", next_train))
+        app.add_error_handler(handle_application_error)
 
         try:
             app.run_polling(drop_pending_updates=True)
             logger.info("Bot polling stopped gracefully.")
             break
-        except (TimedOut, NetworkError):
+        except (TimedOut, NetworkError, Conflict):
             logger.exception(
-                "Telegram API was temporarily unreachable during startup/polling. "
+                "Telegram API was temporarily unreachable/conflicted during startup/polling. "
                 "Retrying in %s seconds.",
                 retry_delay_seconds,
             )
