@@ -6,8 +6,8 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - `/start` welcome message
 - `/help` usage instructions
 - `/stationid` station-code directory (grouped by borough)
-- `/next <train> <station_code>` for next 2 uptown and next 2 downtown arrivals
-- Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
+- `/next <station_code> [uptown|downtown|both]` for all trains at a station (next 2 arrivals per train)
+- Graceful errors for invalid directions, station codes, missing params, API issues, and timeouts
 
 ## Requirements
 - Python 3.10+
@@ -51,8 +51,8 @@ Optional env vars:
 - `BOT_STARTUP_MAX_RETRIES` (default: `0`, meaning infinite retries)
 
 ## Example Usage
-- `/next D HS34`
-- `/next A WTC`
+- `/next HS34`
+- `/next CI uptown`
 - `/stationid`
 
 ### Render deployment note
