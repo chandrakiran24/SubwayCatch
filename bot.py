@@ -3,8 +3,10 @@
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Tuple
 
 import pytz
@@ -140,6 +142,42 @@ def direction_from_stop_id(stop_id: str) -> str:
     return "Unknown"
 
 
+class HealthHandler(BaseHTTPRequestHandler):
+    """Simple health endpoint for platforms that require an open HTTP port."""
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format: str, *args) -> None:
+        # Silence default HTTP request logs; main logger already provides runtime visibility.
+        del format, args
+
+
+def start_health_server() -> None:
+    """Start a tiny HTTP server when PORT is provided (e.g., Render web services)."""
+    port_value = os.getenv("PORT")
+    if not port_value:
+        logger.info("PORT not set; skipping health server startup.")
+        return
+
+    try:
+        port = int(port_value)
+    except ValueError:
+        logger.warning("Invalid PORT value %s; skipping health server startup.", port_value)
+        return
+
+    def run_server() -> None:
+        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+        logger.info("Health server listening on 0.0.0.0:%s", port)
+        server.serve_forever()
+
+    thread = threading.Thread(target=run_server, name="health-server", daemon=True)
+    thread.start()
+
+
 def fetch_mta_updates(train: str, station_code: str) -> Dict[str, object]:
     """
     Fetch upcoming arrivals for a train and user-friendly station code.
@@ -241,10 +279,20 @@ def fetch_mta_updates(train: str, station_code: str) -> Dict[str, object]:
         station_code,
     )
 
+    uptown_arrivals = [arrival for arrival in arrivals if arrival[1] == "Uptown"][:2]
+    downtown_arrivals = [arrival for arrival in arrivals if arrival[1] == "Downtown"][:2]
+
+    if not uptown_arrivals and not downtown_arrivals:
+        return {
+            "ok": False,
+            "error": "No directional arrivals found for that train at this station right now.",
+        }
+
     return {
         "ok": True,
         "station_name": station_name,
-        "arrivals": arrivals[:2],  # Return next 2 arrivals as requested.
+        "uptown_arrivals": uptown_arrivals,
+        "downtown_arrivals": downtown_arrivals,
         "alerts": alerts[:2],
     }
 
@@ -316,13 +364,23 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
         "",
-        "<b>Next Trains</b>",
+        "<b>Uptown (next 2)</b>",
     ]
 
-    for minutes, direction, local_time in result["arrivals"]:
-        lines.append(
-            f"• {escape(direction)} → {int(minutes)} minutes ({escape(local_time)})"
-        )
+    if result["uptown_arrivals"]:
+        for minutes, _, local_time in result["uptown_arrivals"]:
+            lines.append(f"• {int(minutes)} minutes ({escape(local_time)})")
+    else:
+        lines.append("• No upcoming uptown trains")
+
+    lines.append("")
+    lines.append("<b>Downtown (next 2)</b>")
+
+    if result["downtown_arrivals"]:
+        for minutes, _, local_time in result["downtown_arrivals"]:
+            lines.append(f"• {int(minutes)} minutes ({escape(local_time)})")
+    else:
+        lines.append("• No upcoming downtown trains")
 
     lines.append("")
     lines.append("<b>Service Status</b>")
@@ -343,6 +401,8 @@ def main() -> None:
 
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
+
+    start_health_server()
 
     retry_delay_seconds = int(os.getenv("BOT_STARTUP_RETRY_DELAY_SECONDS", "10"))
     max_retries = int(os.getenv("BOT_STARTUP_MAX_RETRIES", "0"))
