@@ -6,7 +6,7 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - `/start` welcome message
 - `/help` usage instructions
 - `/stationid` station-code directory (grouped by borough)
-- `/next <train> <station_code>` for next 2 arrivals
+- `/next <train> <station_code>` for next 2 uptown and next 2 downtown arrivals
 - Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
 
 ## Requirements
@@ -54,3 +54,9 @@ Optional env vars:
 - `/next D HS34`
 - `/next A WTC`
 - `/stationid`
+
+### Render deployment note
+If you deploy this bot as a **Render Web Service**, Render requires the process to bind an HTTP port.
+The bot now starts a lightweight health server automatically when `PORT` is set, so `python3 bot.py` works on Render web services while polling Telegram updates.
+
+If you prefer not to expose an HTTP port at all, deploy as a **Background Worker** instead.
