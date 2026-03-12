@@ -25,6 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("subway_bot")
 
+POLLING_CONFLICT_DETECTED = False
 NYC_TZ = pytz.timezone("America/New_York")
 
 # Official MTA GTFS-RT feeds by line.
@@ -427,7 +428,18 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log uncaught handler errors without crashing update processing."""
+    """Handle uncaught handler/runtime errors from python-telegram-bot."""
+    global POLLING_CONFLICT_DETECTED
+
+    if isinstance(context.error, Conflict):
+        POLLING_CONFLICT_DETECTED = True
+        logger.error(
+            "Telegram polling conflict detected (409). "
+            "Only one active bot instance can poll this token. Stopping current instance."
+        )
+        await context.application.stop()
+        return
+
     logger.exception("Unhandled exception while processing update", exc_info=context.error)
 
     if isinstance(update, Update) and update.effective_message:
@@ -450,8 +462,11 @@ def main() -> None:
     # BOT_STARTUP_MAX_RETRIES=0 means retry forever.
 
     attempt = 0
+    global POLLING_CONFLICT_DETECTED
+
     while True:
         attempt += 1
+        POLLING_CONFLICT_DETECTED = False
         logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
 
         app = Application.builder().token(token).build()
@@ -463,6 +478,13 @@ def main() -> None:
 
         try:
             app.run_polling(drop_pending_updates=True)
+            if POLLING_CONFLICT_DETECTED:
+                logger.warning(
+                    "Polling stopped due to Telegram conflict; retrying in %s seconds.",
+                    retry_delay_seconds,
+                )
+                time.sleep(retry_delay_seconds)
+                continue
             logger.info("Bot polling stopped gracefully.")
             break
         except (TimedOut, NetworkError, Conflict):
