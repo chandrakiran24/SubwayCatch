@@ -26,6 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger("subway_bot")
 
 POLLING_CONFLICT_DETECTED = False
+LAST_REQUEST_BY_CHAT: Dict[int, Tuple[str, str]] = {}
 NYC_TZ = pytz.timezone("America/New_York")
 
 # Official MTA GTFS-RT feeds by line.
@@ -51,6 +52,7 @@ TRAIN_FEEDS: Dict[str, str] = {
     "5": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "S": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
 
 # User-friendly station codes requested by product requirements.
@@ -94,41 +96,41 @@ IMPORTANT_STATIONS: Dict[str, Dict[str, str]] = {
     },
 }
 
-# Station alias -> MTA stop prefix. Prefix matching handles direction suffixes (N/S).
-STATION_ALIAS_TO_STOP_ID: Dict[str, str] = {
-    "HS34": "D17",
-    "TS42": "R16",
-    "US14": "R20",
-    "GC42": "631",
-    "CS59": "A24",
-    "LP66": "127",
-    "CP72": "A22",
-    "FS": "A38",
-    "WS4": "A32",
-    "ASTOR": "635",
-    "CANAL": "R31",
-    "CHAM": "A36",
-    "BATPK": "R27",
-    "8NYU": "R21",
-    "WH": "R26",
-    "WTC": "A55",
-    "AABC": "D24",
-    "JAY": "A41",
-    "DEK": "R30",
-    "BRA": "R41",
-    "BDWY": "A51",
-    "MYRT": "M11",
-    "BED": "L05",
-    "WKOS": "L01",
-    "FLAT": "247",
-    "PROS": "B16",
-    "7AVB": "D25",
-    "9STB": "F21",
-    "CHCH": "D28",
-    "KNGS": "D35",
-    "UTIC": "A65",
-    "FRKL": "S03",
-    "CI": "D43",
+# Station alias -> list of MTA stop prefixes. Prefix matching handles direction suffixes (N/S).
+STATION_ALIAS_TO_STOP_PREFIXES: Dict[str, List[str]] = {
+    "HS34": ["D17", "R14"],
+    "TS42": ["R16", "127", "725", "A27", "D16", "901"],
+    "US14": ["R20"],
+    "GC42": ["631"],
+    "CS59": ["A24"],
+    "LP66": ["127"],
+    "CP72": ["A22"],
+    "FS": ["A38"],
+    "WS4": ["A32"],
+    "ASTOR": ["635"],
+    "CANAL": ["R31"],
+    "CHAM": ["A36"],
+    "BATPK": ["R27"],
+    "8NYU": ["R21"],
+    "WH": ["R26"],
+    "WTC": ["A55"],
+    "AABC": ["D24"],
+    "JAY": ["A41"],
+    "DEK": ["R30"],
+    "BRA": ["R41"],
+    "BDWY": ["A51"],
+    "MYRT": ["M11"],
+    "BED": ["L05"],
+    "WKOS": ["L01"],
+    "FLAT": ["247"],
+    "PROS": ["B16"],
+    "7AVB": ["D25"],
+    "9STB": ["F21"],
+    "CHCH": ["D28"],
+    "KNGS": ["D35"],
+    "UTIC": ["A65"],
+    "FRKL": ["S03"],
+    "CI": ["D43"],
 }
 
 # Station-level service constraints to avoid showing trains/directions that do not serve the station.
@@ -139,7 +141,7 @@ STATION_ALLOWED_DIRECTIONS: Dict[str, Set[str]] = {
     "CI": {"Uptown"},
 }
 
-VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,Z,N,Q,R,W,1,2,3,4,5,6,7"
+VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,S,Z,N,Q,R,W,1,2,3,4,5,6,7"
 
 
 def direction_from_stop_id(stop_id: str) -> str:
@@ -192,7 +194,7 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
     station_code = station_code.upper().strip()
     train_filter = train_filter.upper().strip()
 
-    if station_code not in STATION_ALIAS_TO_STOP_ID:
+    if station_code not in STATION_ALIAS_TO_STOP_PREFIXES:
         return {
             "ok": False,
             "error": "Invalid station code. Use /stationid to see supported codes.",
@@ -213,11 +215,20 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
             "error": f"{train_filter} does not serve station {station_code}.",
         }
 
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
+        return {
+            "ok": False,
+            "error": f"{train_filter} does not serve station {station_code}.",
+        }
+
     api_key = os.getenv("MTA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
-    stop_id_prefix = STATION_ALIAS_TO_STOP_ID[station_code]
+    stop_id_prefixes = STATION_ALIAS_TO_STOP_PREFIXES[station_code]
     if train_filter:
         feeds_for_request = {TRAIN_FEEDS[train_filter]}
     elif allowed_trains:
@@ -265,7 +276,7 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
 
             for stu in trip_update.stop_time_update:
                 stop_id = stu.stop_id.upper() if stu.stop_id else ""
-                if not stop_id.startswith(stop_id_prefix):
+                if not any(stop_id.startswith(prefix) for prefix in stop_id_prefixes):
                     continue
 
                 direction = direction_from_stop_id(stop_id)
@@ -340,6 +351,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /next &lt;station_code&gt;\n"
         "• /next &lt;train&gt; &lt;station_code&gt;\n"
         "• /stationid\n"
+        "• /refresh\n"
         "• /help\n\n"
         "<b>Examples</b>\n"
         "/next HS34\n"
@@ -357,6 +369,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /start - welcome message\n"
         "• /help - usage guide\n"
         "• /stationid - supported station codes\n"
+        "• /refresh - rerun your last /next query\n"
         "• /next &lt;station_code&gt; - all trains at station, both directions\n"
         "• /next &lt;train&gt; &lt;station_code&gt; - one train at station, both directions\n\n"
         "Train examples: A, D, Q, 2, 7\n"
@@ -379,41 +392,8 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
 
 
-async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /next <station_code> or /next <train> <station_code> requests."""
-    if not context.args:
-        await update.message.reply_text(
-            "Missing parameters. Usage:\n"
-            "/next <station_code>\n"
-            "/next <train> <station_code>\n"
-            "Examples: /next HS34  or  /next D HS34"
-        )
-        return
-
-    train_filter = ""
-    station_code = ""
-
-    if len(context.args) == 1:
-        station_code = context.args[0]
-    elif len(context.args) == 2:
-        train_filter = context.args[0]
-        station_code = context.args[1]
-    else:
-        await update.message.reply_text(
-            "Invalid parameters. Usage:\n"
-            "/next <station_code>\n"
-            "/next <train> <station_code>"
-        )
-        return
-
-    logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
-
-    result = fetch_mta_updates(station_code, train_filter)
-    if not result["ok"]:
-        await update.message.reply_text(str(result["error"]))
-        return
-
-    train_scope = str(result.get("train_filter", "")).upper()
+def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> str:
+    """Build a Telegram HTML message for arrivals output."""
     title = "Station Arrivals" if not train_scope else f"{train_scope} Train Arrival"
     lines = [
         f"<b>{escape(title)}</b>",
@@ -452,8 +432,101 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     else:
         lines.append("• No delays reported")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    return "\n".join(lines)
 
+
+async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Repeat the most recent /next query for this chat."""
+    del context
+
+    if not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
+    last_request = LAST_REQUEST_BY_CHAT.get(chat_id)
+    if not last_request:
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "No previous /next request found. Run /next <station_code> first."
+            )
+        return
+
+    train_filter, station_code = last_request
+    logger.info("User requested /refresh train=%s station_code=%s", train_filter or "ALL", station_code)
+
+    result = fetch_mta_updates(station_code, train_filter)
+    if not result["ok"]:
+        if update.effective_message:
+            await update.effective_message.reply_text(str(result["error"]))
+        return
+
+    message = build_arrival_message(result, train_filter)
+    if update.effective_message:
+        await update.effective_message.reply_text(message, parse_mode="HTML")
+
+
+async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /next <station_code> or /next <train> <station_code> requests."""
+    if not context.args:
+        await update.message.reply_text(
+            "Missing parameters. Usage:\n"
+            "/next <station_code>\n"
+            "/next <train> <station_code>\n"
+            "Examples: /next HS34  or  /next D HS34"
+        )
+        return
+
+    train_filter = ""
+    station_code = ""
+
+    if len(context.args) == 1:
+        station_code = context.args[0]
+    elif len(context.args) == 2:
+        train_filter = context.args[0]
+        station_code = context.args[1]
+    else:
+        await update.message.reply_text(
+            "Invalid parameters. Usage:\n"
+            "/next <station_code>\n"
+            "/next <train> <station_code>"
+        )
+        return
+
+    logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
+
+    if update.effective_chat:
+        LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, station_code.upper().strip())
+
+    result = fetch_mta_updates(station_code, train_filter)
+    if not result["ok"]:
+        await update.message.reply_text(str(result["error"]))
+        return
+
+    train_scope = str(result.get("train_filter", "")).upper()
+    message = build_arrival_message(result, train_scope)
+    await update.message.reply_text(message, parse_mode="HTML")
+
+
+
+async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle uncaught handler/runtime errors from python-telegram-bot."""
+    global POLLING_CONFLICT_DETECTED
+
+    if isinstance(context.error, Conflict):
+        POLLING_CONFLICT_DETECTED = True
+        logger.error(
+            "Telegram polling conflict detected (409). "
+            "Only one active bot instance can poll this token. Stopping current instance."
+        )
+        await context.application.stop()
+        return
+
+    logger.exception("Unhandled exception while processing update", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "Sorry, something went wrong while processing your request. Please try again."
+        )
 
 
 async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -503,6 +576,7 @@ def main() -> None:
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("stationid", stationid_command))
         app.add_handler(CommandHandler("next", next_train))
+        app.add_handler(CommandHandler("refresh", refresh_command))
         app.add_error_handler(handle_application_error)
 
         try:
