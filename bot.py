@@ -201,7 +201,7 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
     if train_filter and train_filter not in TRAIN_FEEDS:
         return {
             "ok": False,
-            "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
+            "error": "Invalid station code. Use /stationid to see supported codes.",
         }
 
     allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
@@ -419,6 +419,7 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
+        f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
         "",
     ]
 
