@@ -131,7 +131,15 @@ STATION_ALIAS_TO_STOP_ID: Dict[str, str] = {
     "CI": "D43",
 }
 
-VALID_DIRECTION_TEXT = "uptown,downtown,both"
+# Station-level service constraints to avoid showing trains/directions that do not serve the station.
+STATION_ALLOWED_TRAINS: Dict[str, Set[str]] = {
+    "BRA": {"R"},
+}
+STATION_ALLOWED_DIRECTIONS: Dict[str, Set[str]] = {
+    "CI": {"Uptown"},
+}
+
+VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,Z,N,Q,R,W,1,2,3,4,5,6,7"
 
 
 def direction_from_stop_id(stop_id: str) -> str:
@@ -193,7 +201,16 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
     if train_filter and train_filter not in TRAIN_FEEDS:
         return {
             "ok": False,
-            "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
+            "error": "Invalid station code. Use /stationid to see supported codes.",
+        }
+
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
+        return {
+            "ok": False,
+            "error": f"{train_filter} does not serve station {station_code}.",
         }
 
     api_key = os.getenv("MTA_API_KEY")
@@ -201,7 +218,13 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
     stop_id_prefix = STATION_ALIAS_TO_STOP_ID[station_code]
-    feed_urls: List[str] = [TRAIN_FEEDS[train_filter]] if train_filter else sorted(set(TRAIN_FEEDS.values()))
+    if train_filter:
+        feeds_for_request = {TRAIN_FEEDS[train_filter]}
+    elif allowed_trains:
+        feeds_for_request = {TRAIN_FEEDS[train] for train in allowed_trains}
+    else:
+        feeds_for_request = set(TRAIN_FEEDS.values())
+    feed_urls: List[str] = sorted(feeds_for_request)
 
     logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
 
@@ -237,6 +260,8 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
                 continue
             if train_filter and train != train_filter:
                 continue
+            if allowed_trains and train not in allowed_trains:
+                continue
 
             for stu in trip_update.stop_time_update:
                 stop_id = stu.stop_id.upper() if stu.stop_id else ""
@@ -245,6 +270,8 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
 
                 direction = direction_from_stop_id(stop_id)
                 if direction == "Unknown":
+                    continue
+                if allowed_directions and direction not in allowed_directions:
                     continue
 
                 if not stu.HasField("arrival") or stu.arrival.time <= 0:

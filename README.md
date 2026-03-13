@@ -9,6 +9,7 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - `/next <station_code>` for all trains at a station (both directions, next 2 arrivals per train)
 - `/next <train> <station_code>` for one train at a station (both directions, next 2 arrivals)
 - Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
+- Station-specific service guards are applied for known edge cases (e.g., Bay Ridge Ave excludes non-serving lines; Coney Island shows terminal-compatible direction).
 
 ## Requirements
 - Python 3.10+
