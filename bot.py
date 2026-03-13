@@ -203,7 +203,16 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
     if train_filter and train_filter not in TRAIN_FEEDS:
         return {
             "ok": False,
-            "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
+            "error": "Invalid station code. Use /stationid to see supported codes.",
+        }
+
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
+        return {
+            "ok": False,
+            "error": f"{train_filter} does not serve station {station_code}.",
         }
 
     allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
@@ -390,6 +399,7 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
+        f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
         "",
     ]
 
@@ -496,6 +506,27 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     message = build_arrival_message(result, train_scope)
     await update.message.reply_text(message, parse_mode="HTML")
 
+
+
+async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle uncaught handler/runtime errors from python-telegram-bot."""
+    global POLLING_CONFLICT_DETECTED
+
+    if isinstance(context.error, Conflict):
+        POLLING_CONFLICT_DETECTED = True
+        logger.error(
+            "Telegram polling conflict detected (409). "
+            "Only one active bot instance can poll this token. Stopping current instance."
+        )
+        await context.application.stop()
+        return
+
+    logger.exception("Unhandled exception while processing update", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "Sorry, something went wrong while processing your request. Please try again."
+        )
 
 
 async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
