@@ -296,6 +296,8 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
         "station_name": station_name,
         "station_code": station_code,
         "train_filter": train_filter,
+        # Backward-compatible key for older render codepaths that still expect direction_filter.
+        "direction_filter": "both",
         "uptown_by_train": dict(sorted(uptown_by_train.items())),
         "downtown_by_train": dict(sorted(downtown_by_train.items())),
         "alerts": sorted(alert_set)[:3],

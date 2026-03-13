@@ -67,3 +67,4 @@ If you prefer not to expose an HTTP port at all, deploy as a **Background Worker
 If logs show `Conflict: terminated by other getUpdates request`, more than one bot instance is polling the same token.
 Ensure only one active bot process/web service/worker is running for that Telegram bot token.
 The bot now detects polling conflicts (HTTP 409), stops polling cleanly, and retries automatically.
+If you recently changed command semantics, ensure only the latest deploy is running to avoid stale code paths.
