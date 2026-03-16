@@ -3,18 +3,20 @@
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Tuple
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Dict, List, Set, Tuple
 
 import pytz
 import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
-from telegram import Update
-from telegram.error import NetworkError, TimedOut
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import Conflict, NetworkError, TimedOut
 from html import escape
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 # Configure logger format for cloud/runtime observability.
 logging.basicConfig(
@@ -23,6 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("subway_bot")
 
+POLLING_CONFLICT_DETECTED = False
+LAST_REQUEST_BY_CHAT: Dict[int, Tuple[str, str]] = {}
 NYC_TZ = pytz.timezone("America/New_York")
 
 # Official MTA GTFS-RT feeds by line.
@@ -48,6 +52,7 @@ TRAIN_FEEDS: Dict[str, str] = {
     "5": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "S": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
 
 # User-friendly station codes requested by product requirements.
@@ -87,48 +92,75 @@ IMPORTANT_STATIONS: Dict[str, Dict[str, str]] = {
         "KNGS": "Kings Highway",
         "UTIC": "Utica Ave",
         "FRKL": "Franklin Ave",
-        "CI": "Coney Island",
+        "CI": "Coney Island Stillwell Av",
     },
 }
 
-# Station alias -> MTA stop prefix. Prefix matching handles direction suffixes (N/S).
-STATION_ALIAS_TO_STOP_ID: Dict[str, str] = {
-    "HS34": "D17",
-    "TS42": "R16",
-    "US14": "R20",
-    "GC42": "631",
-    "CS59": "A24",
-    "LP66": "127",
-    "CP72": "A22",
-    "FS": "A38",
-    "WS4": "A32",
-    "ASTOR": "635",
-    "CANAL": "R31",
-    "CHAM": "A36",
-    "BATPK": "R27",
-    "8NYU": "R21",
-    "WH": "R26",
-    "WTC": "A55",
-    "AABC": "D24",
-    "JAY": "A41",
-    "DEK": "R30",
-    "BRA": "R41",
-    "BDWY": "A51",
-    "MYRT": "M11",
-    "BED": "L05",
-    "WKOS": "L01",
-    "FLAT": "247",
-    "PROS": "D43",
-    "7AVB": "D25",
-    "9STB": "F21",
-    "CHCH": "D28",
-    "KNGS": "D35",
-    "UTIC": "A65",
-    "FRKL": "S03",
-    "CI": "D43",
+# Station alias -> list of MTA stop prefixes. Prefix matching handles direction suffixes (N/S).
+STATION_ALIAS_TO_STOP_PREFIXES: Dict[str, List[str]] = {
+    "HS34": ["D17", "R14"],
+    "TS42": ["R16", "127", "725", "A27", "D16", "901"],
+    "US14": ["R20"],
+    "GC42": ["631"],
+    "CS59": ["A24"],
+    "LP66": ["127"],
+    "CP72": ["A22"],
+    "FS": ["A38"],
+    "WS4": ["A32"],
+    "ASTOR": ["635"],
+    "CANAL": ["R31"],
+    "CHAM": ["A36"],
+    "BATPK": ["R27"],
+    "8NYU": ["R21"],
+    "WH": ["R26"],
+    "WTC": ["A55"],
+    "AABC": ["D24"],
+    "JAY": ["A41"],
+    "DEK": ["R30"],
+    "BRA": ["R41"],
+    "BDWY": ["A51"],
+    "MYRT": ["M11"],
+    "BED": ["L05"],
+    "WKOS": ["L01"],
+    "FLAT": ["247"],
+    "PROS": ["B16"],
+    "7AVB": ["D25"],
+    "9STB": ["F21"],
+    "CHCH": ["D28"],
+    "KNGS": ["D35"],
+    "UTIC": ["A65"],
+    "FRKL": ["S03"],
+    "CI": ["D43"],
 }
 
-VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,Z,N,Q,R,W,1,2,3,4,5,6,7"
+# Station-level service constraints to avoid showing trains/directions that do not serve the station.
+STATION_ALLOWED_TRAINS: Dict[str, Set[str]] = {
+    "BRA": {"R"},
+}
+STATION_ALLOWED_DIRECTIONS: Dict[str, Set[str]] = {
+    "CI": {"Uptown"},
+}
+
+VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,S,Z,N,Q,R,W,1,2,3,4,5,6,7"
+REFRESH_CALLBACK_PREFIX = "rf"
+
+
+def refresh_callback_data(train_scope: str, station_code: str) -> str:
+    """Build compact callback payload for per-message refresh."""
+    train = train_scope.upper().strip() or "_"
+    station = station_code.upper().strip()
+    return f"{REFRESH_CALLBACK_PREFIX}|{train}|{station}"
+
+
+def parse_refresh_callback_data(data: str) -> Tuple[str, str]:
+    """Parse callback payload into (train_filter, station_code)."""
+    parts = data.split("|", 2)
+    if len(parts) != 3 or parts[0] != REFRESH_CALLBACK_PREFIX:
+        raise ValueError("Invalid refresh callback payload")
+
+    train = "" if parts[1] == "_" else parts[1]
+    station = parts[2]
+    return train, station
 
 
 def direction_from_stop_id(stop_id: str) -> str:
@@ -140,100 +172,151 @@ def direction_from_stop_id(stop_id: str) -> str:
     return "Unknown"
 
 
-def fetch_mta_updates(train: str, station_code: str) -> Dict[str, object]:
-    """
-    Fetch upcoming arrivals for a train and user-friendly station code.
+class HealthHandler(BaseHTTPRequestHandler):
+    """Simple health endpoint for platforms that require an open HTTP port."""
 
-    Responsibilities:
-      - validate inputs
-      - call MTA GTFS-RT feed
-      - parse protobuf TripUpdates/StopTimeUpdates
-      - return next arrivals and optional alerts
-    """
-    train = train.upper().strip()
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format: str, *args) -> None:
+        # Silence default HTTP request logs; main logger already provides runtime visibility.
+        del format, args
+
+
+def start_health_server() -> None:
+    """Start a tiny HTTP server when PORT is provided (e.g., Render web services)."""
+    port_value = os.getenv("PORT")
+    if not port_value:
+        logger.info("PORT not set; skipping health server startup.")
+        return
+
+    try:
+        port = int(port_value)
+    except ValueError:
+        logger.warning("Invalid PORT value %s; skipping health server startup.", port_value)
+        return
+
+    def run_server() -> None:
+        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+        logger.info("Health server listening on 0.0.0.0:%s", port)
+        server.serve_forever()
+
+    thread = threading.Thread(target=run_server, name="health-server", daemon=True)
+    thread.start()
+
+
+def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, object]:
+    """Fetch upcoming arrivals for a station, optionally filtered to one train line."""
     station_code = station_code.upper().strip()
+    train_filter = train_filter.upper().strip()
 
-    # Validate train first so users get immediate feedback.
-    if train not in TRAIN_FEEDS:
+    if station_code not in STATION_ALIAS_TO_STOP_PREFIXES:
+        return {
+            "ok": False,
+            "error": "Invalid station code. Use /stationid to see supported codes.",
+        }
+
+    if train_filter and train_filter not in TRAIN_FEEDS:
         return {
             "ok": False,
             "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
         }
 
-    # Validate station code and map to stop_id prefix.
-    if station_code not in STATION_ALIAS_TO_STOP_ID:
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
         return {
             "ok": False,
-            "error": "Invalid station code. Use /stationid to see supported codes.",
+            "error": f"{train_filter} does not serve station {station_code}.",
         }
 
     api_key = os.getenv("MTA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
-    stop_id_prefix = STATION_ALIAS_TO_STOP_ID[station_code]
-    feed_url = TRAIN_FEEDS[train]
-    logger.info("Fetching MTA feed for train=%s station_code=%s url=%s", train, station_code, feed_url)
+    stop_id_prefixes = STATION_ALIAS_TO_STOP_PREFIXES[station_code]
+    if train_filter:
+        feeds_for_request = {TRAIN_FEEDS[train_filter]}
+    elif allowed_trains:
+        feeds_for_request = {TRAIN_FEEDS[train] for train in allowed_trains}
+    else:
+        feeds_for_request = set(TRAIN_FEEDS.values())
+    feed_urls: List[str] = sorted(feeds_for_request)
 
-    try:
-        response = requests.get(feed_url, headers={"x-api-key": api_key}, timeout=15)
-        response.raise_for_status()
-    except requests.Timeout:
-        logger.exception("MTA API timeout for train=%s", train)
-        return {"ok": False, "error": "MTA API timeout. Please try again in a moment."}
-    except requests.RequestException as exc:
-        logger.exception("MTA API request failed: %s", exc)
-        return {"ok": False, "error": "MTA API request failed. Please try again later."}
-
-    feed = gtfs_realtime_pb2.FeedMessage()
-    try:
-        feed.ParseFromString(response.content)
-    except Exception as exc:
-        logger.exception("Failed to parse protobuf feed: %s", exc)
-        return {"ok": False, "error": "Could not parse MTA feed response."}
+    logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
 
     now = datetime.now(tz=NYC_TZ)
-    arrivals: List[Tuple[int, str, str]] = []
+    arrivals: List[Tuple[int, str, str, str]] = []
+    alert_set: Set[str] = set()
 
-    for entity in feed.entity:
-        if not entity.HasField("trip_update"):
+    for feed_url in feed_urls:
+        try:
+            response = requests.get(feed_url, headers={"x-api-key": api_key}, timeout=15)
+            response.raise_for_status()
+        except requests.Timeout:
+            logger.exception("MTA API timeout for feed=%s", feed_url)
+            continue
+        except requests.RequestException as exc:
+            logger.exception("MTA API request failed for feed=%s: %s", feed_url, exc)
             continue
 
-        trip_update = entity.trip_update
-        if not trip_update.trip.route_id or trip_update.trip.route_id.upper() != train:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        try:
+            feed.ParseFromString(response.content)
+        except Exception as exc:
+            logger.exception("Failed to parse protobuf feed for feed=%s: %s", feed_url, exc)
             continue
 
-        for stu in trip_update.stop_time_update:
-            stop_id = stu.stop_id.upper() if stu.stop_id else ""
-            if not stop_id.startswith(stop_id_prefix):
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
                 continue
 
-            if not stu.HasField("arrival") or stu.arrival.time <= 0:
+            trip_update = entity.trip_update
+            train = trip_update.trip.route_id.upper().strip() if trip_update.trip.route_id else ""
+            if train not in TRAIN_FEEDS:
+                continue
+            if train_filter and train != train_filter:
+                continue
+            if allowed_trains and train not in allowed_trains:
                 continue
 
-            arrival_dt = datetime.fromtimestamp(stu.arrival.time, tz=NYC_TZ)
-            minutes = int((arrival_dt - now).total_seconds() // 60)
-            if minutes < 0:
+            for stu in trip_update.stop_time_update:
+                stop_id = stu.stop_id.upper() if stu.stop_id else ""
+                if not any(stop_id.startswith(prefix) for prefix in stop_id_prefixes):
+                    continue
+
+                direction = direction_from_stop_id(stop_id)
+                if direction == "Unknown":
+                    continue
+                if allowed_directions and direction not in allowed_directions:
+                    continue
+
+                if not stu.HasField("arrival") or stu.arrival.time <= 0:
+                    continue
+
+                arrival_dt = datetime.fromtimestamp(stu.arrival.time, tz=NYC_TZ)
+                minutes = int((arrival_dt - now).total_seconds() // 60)
+                if minutes < 0:
+                    continue
+
+                arrivals.append((minutes, direction, train, arrival_dt.strftime("%I:%M %p")))
+
+        for entity in feed.entity:
+            if not entity.HasField("alert"):
                 continue
-
-            arrivals.append((minutes, direction_from_stop_id(stop_id), arrival_dt.strftime("%I:%M %p")))
-
-    arrivals.sort(key=lambda row: row[0])
-
-    # Best-effort alert extraction from same feed when alert entities are present.
-    alerts: List[str] = []
-    for entity in feed.entity:
-        if not entity.HasField("alert"):
-            continue
-        if entity.alert.header_text.translation:
-            text = entity.alert.header_text.translation[0].text.strip()
-            if text:
-                alerts.append(text)
+            if entity.alert.header_text.translation:
+                text = entity.alert.header_text.translation[0].text.strip()
+                if text:
+                    alert_set.add(text)
 
     if not arrivals:
         return {
             "ok": False,
-            "error": "No upcoming arrivals found for that train at this station right now.",
+            "error": "No upcoming arrivals found for this request right now.",
         }
 
     station_name = next(
@@ -241,11 +324,31 @@ def fetch_mta_updates(train: str, station_code: str) -> Dict[str, object]:
         station_code,
     )
 
+    arrivals.sort(key=lambda row: (row[2], row[0]))
+
+    uptown_by_train: Dict[str, List[Tuple[int, str]]] = {}
+    downtown_by_train: Dict[str, List[Tuple[int, str]]] = {}
+
+    for minutes, direction, train, local_time in arrivals:
+        if direction == "Uptown":
+            uptown_by_train.setdefault(train, [])
+            if len(uptown_by_train[train]) < 2:
+                uptown_by_train[train].append((minutes, local_time))
+        elif direction == "Downtown":
+            downtown_by_train.setdefault(train, [])
+            if len(downtown_by_train[train]) < 2:
+                downtown_by_train[train].append((minutes, local_time))
+
     return {
         "ok": True,
         "station_name": station_name,
-        "arrivals": arrivals[:2],  # Return next 2 arrivals as requested.
-        "alerts": alerts[:2],
+        "station_code": station_code,
+        "train_filter": train_filter,
+        # Backward-compatible key for older render codepaths that still expect direction_filter.
+        "direction_filter": "both",
+        "uptown_by_train": dict(sorted(uptown_by_train.items())),
+        "downtown_by_train": dict(sorted(downtown_by_train.items())),
+        "alerts": sorted(alert_set)[:3],
     }
 
 
@@ -255,10 +358,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = (
         "<b>NYC Subway Arrival Bot</b>\n\n"
         "<b>Commands</b>\n"
+        "• /next &lt;station_code&gt;\n"
         "• /next &lt;train&gt; &lt;station_code&gt;\n"
         "• /stationid\n"
+        "• /refresh\n"
         "• /help\n\n"
-        "<b>Example</b>\n"
+        "<b>Examples</b>\n"
+        "/next HS34\n"
         "/next D HS34"
     )
     await update.message.reply_text(message, parse_mode="HTML")
@@ -273,7 +379,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /start - welcome message\n"
         "• /help - usage guide\n"
         "• /stationid - supported station codes\n"
-        "• /next &lt;train&gt; &lt;station_code&gt; - next arrivals\n\n"
+        "• /refresh - rerun your last /next query\n"
+        "• /next &lt;station_code&gt; - all trains at station, both directions\n"
+        "• /next &lt;train&gt; &lt;station_code&gt; - one train at station, both directions\n\n"
         "Train examples: A, D, Q, 2, 7\n"
         "Station codes are short aliases such as HS34, TS42, GC42.\n"
         "Use /stationid to browse all supported station codes."
@@ -294,47 +402,179 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
 
 
-async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /next <train> <station_code> requests."""
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "Missing parameters. Usage: /next <train> <station_code>\nExample: /next D HS34"
-        )
-        return
+def refresh_inline_markup(train_scope: str, station_code: str) -> InlineKeyboardMarkup:
+    """Return per-message inline refresh button bound to request scope."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔄 Refresh", callback_data=refresh_callback_data(train_scope, station_code))]]
+    )
 
-    train = context.args[0]
-    station_code = context.args[1]
-    logger.info("User requested /next train=%s station_code=%s", train, station_code)
 
-    result = fetch_mta_updates(train, station_code)
-    if not result["ok"]:
-        await update.message.reply_text(str(result["error"]))
-        return
-
+def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> str:
+    """Build a Telegram HTML message for arrivals output."""
+    title = "Station Arrivals" if not train_scope else f"{train_scope} Train Arrival"
     lines = [
-        f"<b>{escape(train.upper())} Train Arrival</b>",
+        f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
+        "<b>Direction:</b> Both",
         "",
-        "<b>Next Trains</b>",
     ]
 
-    for minutes, direction, local_time in result["arrivals"]:
-        lines.append(
-            f"• {escape(direction)} → {int(minutes)} minutes ({escape(local_time)})"
-        )
+    lines.append("<b>Uptown (next 2 per train)</b>")
+    if result["uptown_by_train"]:
+        for train, arrivals in result["uptown_by_train"].items():
+            formatted = ", ".join(
+                f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
+            )
+            lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+    else:
+        lines.append("• No upcoming uptown trains")
+
+    lines.append("")
+    lines.append("<b>Downtown (next 2 per train)</b>")
+    if result["downtown_by_train"]:
+        for train, arrivals in result["downtown_by_train"].items():
+            formatted = ", ".join(
+                f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
+            )
+            lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+    else:
+        lines.append("• No upcoming downtown trains")
 
     lines.append("")
     lines.append("<b>Service Status</b>")
-
     if result["alerts"]:
         for alert in result["alerts"]:
             lines.append(f"• {escape(alert)}")
     else:
         lines.append("• No delays reported")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    lines.append("")
+    lines.append("<i>Tap Refresh below to update this specific request.</i>")
 
+    return "\n".join(lines)
+
+
+async def refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle per-message inline refresh callback for exact request scope."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    try:
+        train_filter, station_code = parse_refresh_callback_data(query.data)
+    except ValueError:
+        await query.answer("Invalid refresh request.", show_alert=True)
+        return
+
+    await query.answer("Refreshing…")
+
+    result = fetch_mta_updates(station_code, train_filter)
+    if not result["ok"]:
+        await query.answer(str(result["error"]), show_alert=True)
+        return
+
+    train_scope = str(result.get("train_filter", train_filter)).upper()
+    message = build_arrival_message(result, train_scope)
+    await query.edit_message_text(
+        message,
+        parse_mode="HTML",
+        reply_markup=refresh_inline_markup(train_scope, station_code),
+    )
+
+
+async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Repeat the most recent /next query for this chat."""
+    del context
+
+    if not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
+    last_request = LAST_REQUEST_BY_CHAT.get(chat_id)
+    if not last_request:
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "No previous /next request found. Run /next <station_code> first."
+            )
+        return
+
+    train_filter, station_code = last_request
+    logger.info("User requested /refresh train=%s station_code=%s", train_filter or "ALL", station_code)
+
+    result = fetch_mta_updates(station_code, train_filter)
+    if not result["ok"]:
+        if update.effective_message:
+            await update.effective_message.reply_text(str(result["error"]))
+        return
+
+    message = build_arrival_message(result, train_filter)
+    if update.effective_message:
+        await update.effective_message.reply_text(message, parse_mode="HTML", reply_markup=refresh_inline_markup(train_filter, station_code))
+
+
+async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /next <station_code> or /next <train> <station_code> requests."""
+    if not context.args:
+        await update.message.reply_text(
+            "Missing parameters. Usage:\n"
+            "/next <station_code>\n"
+            "/next <train> <station_code>\n"
+            "Examples: /next HS34  or  /next D HS34"
+        )
+        return
+
+    train_filter = ""
+    station_code = ""
+
+    if len(context.args) == 1:
+        station_code = context.args[0]
+    elif len(context.args) == 2:
+        train_filter = context.args[0]
+        station_code = context.args[1]
+    else:
+        await update.message.reply_text(
+            "Invalid parameters. Usage:\n"
+            "/next <station_code>\n"
+            "/next <train> <station_code>"
+        )
+        return
+
+    logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
+
+    if update.effective_chat:
+        LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, station_code.upper().strip())
+
+    result = fetch_mta_updates(station_code, train_filter)
+    if not result["ok"]:
+        await update.message.reply_text(str(result["error"]))
+        return
+
+    train_scope = str(result.get("train_filter", "")).upper()
+    message = build_arrival_message(result, train_scope)
+    await update.message.reply_text(message, parse_mode="HTML", reply_markup=refresh_inline_markup(train_scope, station_code.upper().strip()))
+
+
+
+async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle uncaught handler/runtime errors from python-telegram-bot."""
+    global POLLING_CONFLICT_DETECTED
+
+    if isinstance(context.error, Conflict):
+        POLLING_CONFLICT_DETECTED = True
+        logger.error(
+            "Telegram polling conflict detected (409). "
+            "Only one active bot instance can poll this token. Stopping current instance."
+        )
+        await context.application.stop()
+        return
+
+    logger.exception("Unhandled exception while processing update", exc_info=context.error)
+
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            "Sorry, something went wrong while processing your request. Please try again."
+        )
 
 def main() -> None:
     """Initialize and run the Telegram bot."""
@@ -344,13 +584,22 @@ def main() -> None:
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
 
+    webhook_base_url = os.getenv("TELEGRAM_WEBHOOK_BASE_URL", "").strip().rstrip("/")
+    webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", token)
+
+    if not webhook_base_url:
+        start_health_server()
+
     retry_delay_seconds = int(os.getenv("BOT_STARTUP_RETRY_DELAY_SECONDS", "10"))
     max_retries = int(os.getenv("BOT_STARTUP_MAX_RETRIES", "0"))
     # BOT_STARTUP_MAX_RETRIES=0 means retry forever.
 
     attempt = 0
+    global POLLING_CONFLICT_DETECTED
+
     while True:
         attempt += 1
+        POLLING_CONFLICT_DETECTED = False
         logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
 
         app = Application.builder().token(token).build()
@@ -358,14 +607,36 @@ def main() -> None:
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("stationid", stationid_command))
         app.add_handler(CommandHandler("next", next_train))
+        app.add_handler(CommandHandler("refresh", refresh_command))
+        app.add_handler(CallbackQueryHandler(refresh_callback, pattern=r"^rf\|"))
+        app.add_error_handler(handle_application_error)
 
         try:
-            app.run_polling(drop_pending_updates=True)
+            if webhook_base_url:
+                port = int(os.getenv("PORT", "10000"))
+                webhook_url = f"{webhook_base_url}/{webhook_path}"
+                logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
+                app.run_webhook(
+                    listen="0.0.0.0",
+                    port=port,
+                    url_path=webhook_path,
+                    webhook_url=webhook_url,
+                    drop_pending_updates=True,
+                )
+            else:
+                app.run_polling(drop_pending_updates=True)
+            if POLLING_CONFLICT_DETECTED:
+                logger.warning(
+                    "Polling stopped due to Telegram conflict; retrying in %s seconds.",
+                    retry_delay_seconds,
+                )
+                time.sleep(retry_delay_seconds)
+                continue
             logger.info("Bot polling stopped gracefully.")
             break
-        except (TimedOut, NetworkError):
+        except (TimedOut, NetworkError, Conflict):
             logger.exception(
-                "Telegram API was temporarily unreachable during startup/polling. "
+                "Telegram API was temporarily unreachable/conflicted during startup/polling. "
                 "Retrying in %s seconds.",
                 retry_delay_seconds,
             )
