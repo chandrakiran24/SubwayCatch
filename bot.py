@@ -13,10 +13,10 @@ import pytz
 import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import Conflict, NetworkError, TimedOut
 from html import escape
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Configure logger format for cloud/runtime observability.
 logging.basicConfig(
@@ -142,25 +142,6 @@ STATION_ALLOWED_DIRECTIONS: Dict[str, Set[str]] = {
 }
 
 VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,S,Z,N,Q,R,W,1,2,3,4,5,6,7"
-REFRESH_CALLBACK_PREFIX = "rf"
-
-
-def refresh_callback_data(train_scope: str, station_code: str) -> str:
-    """Build compact callback payload for per-message refresh."""
-    train = train_scope.upper().strip() or "_"
-    station = station_code.upper().strip()
-    return f"{REFRESH_CALLBACK_PREFIX}|{train}|{station}"
-
-
-def parse_refresh_callback_data(data: str) -> Tuple[str, str]:
-    """Parse callback payload into (train_filter, station_code)."""
-    parts = data.split("|", 2)
-    if len(parts) != 3 or parts[0] != REFRESH_CALLBACK_PREFIX:
-        raise ValueError("Invalid refresh callback payload")
-
-    train = "" if parts[1] == "_" else parts[1]
-    station = parts[2]
-    return train, station
 
 
 def direction_from_stop_id(stop_id: str) -> str:
@@ -223,15 +204,6 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
         return {
             "ok": False,
             "error": "Invalid station code. Use /stationid to see supported codes.",
-        }
-
-    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
-    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
-
-    if train_filter and allowed_trains and train_filter not in allowed_trains:
-        return {
-            "ok": False,
-            "error": f"{train_filter} does not serve station {station_code}.",
         }
 
     allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
@@ -429,10 +401,12 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
 
 
-def refresh_inline_markup(train_scope: str, station_code: str) -> InlineKeyboardMarkup:
-    """Return per-message inline refresh button bound to request scope."""
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔄 Refresh", callback_data=refresh_callback_data(train_scope, station_code))]]
+def refresh_reply_markup() -> ReplyKeyboardMarkup:
+    """Return a compact one-tap keyboard with /refresh."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton("/refresh")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
     )
 
 
@@ -443,7 +417,7 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
-        "<b>Direction:</b> Both",
+        f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
         "",
     ]
 
@@ -476,38 +450,7 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
     else:
         lines.append("• No delays reported")
 
-    lines.append("")
-    lines.append("<i>Tap Refresh below to update this specific request.</i>")
-
     return "\n".join(lines)
-
-
-async def refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle per-message inline refresh callback for exact request scope."""
-    query = update.callback_query
-    if not query or not query.data:
-        return
-
-    try:
-        train_filter, station_code = parse_refresh_callback_data(query.data)
-    except ValueError:
-        await query.answer("Invalid refresh request.", show_alert=True)
-        return
-
-    await query.answer("Refreshing…")
-
-    result = fetch_mta_updates(station_code, train_filter)
-    if not result["ok"]:
-        await query.answer(str(result["error"]), show_alert=True)
-        return
-
-    train_scope = str(result.get("train_filter", train_filter)).upper()
-    message = build_arrival_message(result, train_scope)
-    await query.edit_message_text(
-        message,
-        parse_mode="HTML",
-        reply_markup=refresh_inline_markup(train_scope, station_code),
-    )
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -537,7 +480,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     message = build_arrival_message(result, train_filter)
     if update.effective_message:
-        await update.effective_message.reply_text(message, parse_mode="HTML", reply_markup=refresh_inline_markup(train_filter, station_code))
+        await update.effective_message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
 
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -579,7 +522,7 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     train_scope = str(result.get("train_filter", "")).upper()
     message = build_arrival_message(result, train_scope)
-    await update.message.reply_text(message, parse_mode="HTML", reply_markup=refresh_inline_markup(train_scope, station_code.upper().strip()))
+    await update.message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
 
 
 
@@ -635,7 +578,6 @@ def main() -> None:
         app.add_handler(CommandHandler("stationid", stationid_command))
         app.add_handler(CommandHandler("next", next_train))
         app.add_handler(CommandHandler("refresh", refresh_command))
-        app.add_handler(CallbackQueryHandler(refresh_callback, pattern=r"^rf\|"))
         app.add_error_handler(handle_application_error)
 
         try:
