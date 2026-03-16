@@ -7,7 +7,6 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - `/help` usage instructions
 - `/stationid` station-code directory (grouped by borough)
 - `/refresh` re-runs your most recent `/next` query in the same chat
-- Per-message refresh button (`🔄 Refresh`) updates that specific arrival response in place
 - `/next <station_code>` for all trains at a station (both directions, next 2 arrivals per train)
 - `/next <train> <station_code>` for one train at a station (both directions, next 2 arrivals)
 - Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
