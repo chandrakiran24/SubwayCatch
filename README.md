@@ -6,8 +6,12 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - `/start` welcome message
 - `/help` usage instructions
 - `/stationid` station-code directory (grouped by borough)
-- `/next <train> <station_code>` for next 2 arrivals
+- `/refresh` re-runs your most recent `/next` query in the same chat
+- `/next <station_code>` for all trains at a station (both directions, next 2 arrivals per train)
+- `/next <train> <station_code>` for one train at a station (both directions, next 2 arrivals)
 - Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
+- Station-specific service guards are applied for known edge cases (e.g., Bay Ridge Ave excludes non-serving lines; Coney Island shows terminal-compatible direction).
+- Times Square/Herald Square now include all relevant stop prefixes so station-wide results are not artificially limited to one line group.
 
 ## Requirements
 - Python 3.10+
@@ -27,6 +31,10 @@ Set these in your shell or `.env` file:
 ```bash
 export TELEGRAM_BOT_TOKEN="your_token"
 export MTA_API_KEY="your_mta_api_key"
+# Optional for auto-wake webhook mode on Render web services
+export TELEGRAM_WEBHOOK_BASE_URL="https://your-service.onrender.com"
+# Optional: custom path segment (defaults to bot token)
+export TELEGRAM_WEBHOOK_PATH="telegram-webhook"
 ```
 
 ## Run Locally
@@ -51,6 +59,26 @@ Optional env vars:
 - `BOT_STARTUP_MAX_RETRIES` (default: `0`, meaning infinite retries)
 
 ## Example Usage
+- `/next HS34`
 - `/next D HS34`
-- `/next A WTC`
+- `/refresh`
 - `/stationid`
+
+### Render deployment note
+If you deploy this bot as a **Render Web Service**, Render requires the process to bind an HTTP port.
+The bot now starts a lightweight health server automatically when `PORT` is set, so `python3 bot.py` works on Render web services while polling Telegram updates.
+
+If you prefer not to expose an HTTP port at all, deploy as a **Background Worker** instead.
+
+
+### Telegram polling conflict troubleshooting
+If logs show `Conflict: terminated by other getUpdates request`, more than one bot instance is polling the same token.
+Ensure only one active bot process/web service/worker is running for that Telegram bot token.
+The bot now detects polling conflicts (HTTP 409), stops polling cleanly, and retries automatically.
+If you recently changed command semantics, ensure only the latest deploy is running to avoid stale code paths.
+
+
+### Webhook mode for auto-wake on /start
+For Render services that sleep on inactivity, polling mode cannot receive `/start` while asleep.
+Set `TELEGRAM_WEBHOOK_BASE_URL` (and optionally `TELEGRAM_WEBHOOK_PATH`) to run in webhook mode.
+In webhook mode, Telegram delivers updates to your Render URL, which wakes the service automatically when a user sends `/start` or any command.
