@@ -203,7 +203,25 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
     if train_filter and train_filter not in TRAIN_FEEDS:
         return {
             "ok": False,
-            "error": f"Invalid train line. Use {VALID_TRAINS_TEXT}.",
+            "error": "Invalid station code. Use /stationid to see supported codes.",
+        }
+
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
+        return {
+            "ok": False,
+            "error": f"{train_filter} does not serve station {station_code}.",
+        }
+
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
+        return {
+            "ok": False,
+            "error": f"{train_filter} does not serve station {station_code}.",
         }
 
     allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
@@ -399,6 +417,7 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
+        f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
         "",
     ]
 
