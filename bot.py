@@ -203,25 +203,7 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
     if train_filter and train_filter not in TRAIN_FEEDS:
         return {
             "ok": False,
-            "error": "Invalid station code. Use /stationid to see supported codes.",
-        }
-
-    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
-    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
-
-    if train_filter and allowed_trains and train_filter not in allowed_trains:
-        return {
-            "ok": False,
-            "error": f"{train_filter} does not serve station {station_code}.",
-        }
-
-    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
-    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
-
-    if train_filter and allowed_trains and train_filter not in allowed_trains:
-        return {
-            "ok": False,
-            "error": f"{train_filter} does not serve station {station_code}.",
+            "error": f"Invalid train line '{train_filter}'. Valid trains: {VALID_TRAINS_TEXT}",
         }
 
     allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
@@ -555,7 +537,10 @@ def main() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
 
     webhook_base_url = os.getenv("TELEGRAM_WEBHOOK_BASE_URL", "").strip().rstrip("/")
+    if not webhook_base_url:
+        webhook_base_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
     webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", token)
+    drop_pending_updates = os.getenv("DROP_PENDING_UPDATES", "false").strip().lower() == "true"
 
     if not webhook_base_url:
         start_health_server()
@@ -590,10 +575,10 @@ def main() -> None:
                     port=port,
                     url_path=webhook_path,
                     webhook_url=webhook_url,
-                    drop_pending_updates=True,
+                    drop_pending_updates=drop_pending_updates,
                 )
             else:
-                app.run_polling(drop_pending_updates=True)
+                app.run_polling(drop_pending_updates=drop_pending_updates)
             if POLLING_CONFLICT_DETECTED:
                 logger.warning(
                     "Polling stopped due to Telegram conflict; retrying in %s seconds.",
