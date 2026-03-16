@@ -13,7 +13,7 @@ import pytz
 import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
-from telegram import Update
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import Conflict, NetworkError, TimedOut
 from html import escape
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -224,6 +224,15 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
             "error": f"{train_filter} does not serve station {station_code}.",
         }
 
+    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
+    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
+
+    if train_filter and allowed_trains and train_filter not in allowed_trains:
+        return {
+            "ok": False,
+            "error": f"{train_filter} does not serve station {station_code}.",
+        }
+
     api_key = os.getenv("MTA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
@@ -392,6 +401,15 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
 
 
+def refresh_reply_markup() -> ReplyKeyboardMarkup:
+    """Return a compact one-tap keyboard with /refresh."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton("/refresh")]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
 def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> str:
     """Build a Telegram HTML message for arrivals output."""
     title = "Station Arrivals" if not train_scope else f"{train_scope} Train Arrival"
@@ -462,7 +480,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     message = build_arrival_message(result, train_filter)
     if update.effective_message:
-        await update.effective_message.reply_text(message, parse_mode="HTML")
+        await update.effective_message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
 
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -504,29 +522,8 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     train_scope = str(result.get("train_filter", "")).upper()
     message = build_arrival_message(result, train_scope)
-    await update.message.reply_text(message, parse_mode="HTML")
+    await update.message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
 
-
-
-async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle uncaught handler/runtime errors from python-telegram-bot."""
-    global POLLING_CONFLICT_DETECTED
-
-    if isinstance(context.error, Conflict):
-        POLLING_CONFLICT_DETECTED = True
-        logger.error(
-            "Telegram polling conflict detected (409). "
-            "Only one active bot instance can poll this token. Stopping current instance."
-        )
-        await context.application.stop()
-        return
-
-    logger.exception("Unhandled exception while processing update", exc_info=context.error)
-
-    if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text(
-            "Sorry, something went wrong while processing your request. Please try again."
-        )
 
 
 async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -557,7 +554,11 @@ def main() -> None:
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set.")
 
-    start_health_server()
+    webhook_base_url = os.getenv("TELEGRAM_WEBHOOK_BASE_URL", "").strip().rstrip("/")
+    webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", token)
+
+    if not webhook_base_url:
+        start_health_server()
 
     retry_delay_seconds = int(os.getenv("BOT_STARTUP_RETRY_DELAY_SECONDS", "10"))
     max_retries = int(os.getenv("BOT_STARTUP_MAX_RETRIES", "0"))
@@ -580,7 +581,19 @@ def main() -> None:
         app.add_error_handler(handle_application_error)
 
         try:
-            app.run_polling(drop_pending_updates=True)
+            if webhook_base_url:
+                port = int(os.getenv("PORT", "10000"))
+                webhook_url = f"{webhook_base_url}/{webhook_path}"
+                logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
+                app.run_webhook(
+                    listen="0.0.0.0",
+                    port=port,
+                    url_path=webhook_path,
+                    webhook_url=webhook_url,
+                    drop_pending_updates=True,
+                )
+            else:
+                app.run_polling(drop_pending_updates=True)
             if POLLING_CONFLICT_DETECTED:
                 logger.warning(
                     "Polling stopped due to Telegram conflict; retrying in %s seconds.",
