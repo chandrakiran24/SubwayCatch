@@ -35,6 +35,8 @@ export MTA_API_KEY="your_mta_api_key"
 export TELEGRAM_WEBHOOK_BASE_URL="https://your-service.onrender.com"
 # Optional: custom path segment (defaults to bot token)
 export TELEGRAM_WEBHOOK_PATH="telegram-webhook"
+# Optional: keep queued updates on startup (default false)
+export DROP_PENDING_UPDATES="false"
 ```
 
 ## Run Locally
@@ -81,4 +83,8 @@ If you recently changed command semantics, ensure only the latest deploy is runn
 ### Webhook mode for auto-wake on /start
 For Render services that sleep on inactivity, polling mode cannot receive `/start` while asleep.
 Set `TELEGRAM_WEBHOOK_BASE_URL` (and optionally `TELEGRAM_WEBHOOK_PATH`) to run in webhook mode.
+If `TELEGRAM_WEBHOOK_BASE_URL` is not set, the bot also auto-detects Render's `RENDER_EXTERNAL_URL`.
 In webhook mode, Telegram delivers updates to your Render URL, which wakes the service automatically when a user sends `/start` or any command.
+Webhook mode requires PTB webhook extras (already included in `requirements.txt` via `python-telegram-bot[webhooks]`).
+
+By default, startup does not drop pending updates anymore, so commands sent while the service was restarting are still processed. Set `DROP_PENDING_UPDATES=true` only if you explicitly want to discard backlog.
