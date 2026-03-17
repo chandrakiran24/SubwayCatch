@@ -570,13 +570,22 @@ def main() -> None:
                 port = int(os.getenv("PORT", "10000"))
                 webhook_url = f"{webhook_base_url}/{webhook_path}"
                 logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
-                app.run_webhook(
-                    listen="0.0.0.0",
-                    port=port,
-                    url_path=webhook_path,
-                    webhook_url=webhook_url,
-                    drop_pending_updates=drop_pending_updates,
-                )
+                try:
+                    app.run_webhook(
+                        listen="0.0.0.0",
+                        port=port,
+                        url_path=webhook_path,
+                        webhook_url=webhook_url,
+                        drop_pending_updates=drop_pending_updates,
+                    )
+                except RuntimeError as exc:
+                    if "python-telegram-bot[webhooks]" not in str(exc):
+                        raise
+                    logger.warning(
+                        "Webhook dependencies are missing; falling back to polling mode. "
+                        "Install with: pip install 'python-telegram-bot[webhooks]'."
+                    )
+                    app.run_polling(drop_pending_updates=drop_pending_updates)
             else:
                 app.run_polling(drop_pending_updates=drop_pending_updates)
             if POLLING_CONFLICT_DETECTED:
