@@ -5,12 +5,13 @@ import logging
 import os
 import threading
 import time
+import asyncio
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
+import aiohttp
 import pytz
-import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
@@ -189,7 +190,24 @@ def start_health_server() -> None:
     thread.start()
 
 
-def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, object]:
+async def _fetch_feed(
+    session: aiohttp.ClientSession,
+    feed_url: str,
+    api_key: str,
+) -> Tuple[str, Optional[bytes], float]:
+    """Fetch one GTFS feed and return URL, content, and fetch latency in milliseconds."""
+    fetch_started = time.perf_counter()
+    try:
+        async with session.get(feed_url, headers={"x-api-key": api_key}) as response:
+            response.raise_for_status()
+            content = await response.read()
+            return feed_url, content, (time.perf_counter() - fetch_started) * 1000
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        logger.exception("MTA API request failed for feed=%s: %s", feed_url, exc)
+        return feed_url, None, (time.perf_counter() - fetch_started) * 1000
+
+
+async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, object]:
     """Fetch upcoming arrivals for a station, optionally filtered to one train line."""
     station_code = station_code.upper().strip()
     train_filter = train_filter.upper().strip()
@@ -230,24 +248,35 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
 
     logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
 
+    # Data flow: line -> feed URL -> protobuf bytes -> parsed trip/alert entities.
+    lines_in_scope = sorted({train_filter} if train_filter else {line for line, feed in TRAIN_FEEDS.items() if feed in feeds_for_request})
+    logger.info(
+        "MTA data path station=%s lines=%s feeds=%s",
+        station_code,
+        ",".join(lines_in_scope) if lines_in_scope else "ALL",
+        len(feed_urls),
+    )
+
     now = datetime.now(tz=NYC_TZ)
     arrivals: List[Tuple[int, str, str, str]] = []
     alert_set: Set[str] = set()
+    timeout = aiohttp.ClientTimeout(total=15)
 
-    for feed_url in feed_urls:
-        try:
-            response = requests.get(feed_url, headers={"x-api-key": api_key}, timeout=15)
-            response.raise_for_status()
-        except requests.Timeout:
-            logger.exception("MTA API timeout for feed=%s", feed_url)
-            continue
-        except requests.RequestException as exc:
-            logger.exception("MTA API request failed for feed=%s: %s", feed_url, exc)
-            continue
+    fetch_batch_started = time.perf_counter()
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        fetch_results = await asyncio.gather(
+            *[_fetch_feed(session, feed_url, api_key) for feed_url in feed_urls]
+        )
+    fetch_batch_ms = (time.perf_counter() - fetch_batch_started) * 1000
 
+    parse_started = time.perf_counter()
+    for feed_url, content, per_feed_fetch_ms in fetch_results:
+        logger.info("mta_metrics feed_url=%s feed_fetch_ms=%.2f", feed_url, per_feed_fetch_ms)
+        if content is None:
+            continue
         feed = gtfs_realtime_pb2.FeedMessage()
         try:
-            feed.ParseFromString(response.content)
+            feed.ParseFromString(content)
         except Exception as exc:
             logger.exception("Failed to parse protobuf feed for feed=%s: %s", feed_url, exc)
             continue
@@ -293,6 +322,14 @@ def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, ob
                 text = entity.alert.header_text.translation[0].text.strip()
                 if text:
                     alert_set.add(text)
+    parse_ms = (time.perf_counter() - parse_started) * 1000
+    logger.info(
+        "mta_metrics station_code=%s train_filter=%s feed_fetch_ms=%.2f parse_ms=%.2f",
+        station_code,
+        train_filter or "ALL",
+        fetch_batch_ms,
+        parse_ms,
+    )
 
     if not arrivals:
         return {
@@ -454,7 +491,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     train_filter, station_code = last_request
     logger.info("User requested /refresh train=%s station_code=%s", train_filter or "ALL", station_code)
 
-    result = fetch_mta_updates(station_code, train_filter)
+    result = await fetch_mta_updates(station_code, train_filter)
     if not result["ok"]:
         if update.effective_message:
             await update.effective_message.reply_text(str(result["error"]))
@@ -497,7 +534,7 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if update.effective_chat:
         LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, station_code.upper().strip())
 
-    result = fetch_mta_updates(station_code, train_filter)
+    result = await fetch_mta_updates(station_code, train_filter)
     if not result["ok"]:
         await update.message.reply_text(str(result["error"]))
         return
