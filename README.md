@@ -12,6 +12,8 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - Graceful errors for invalid train lines, station codes, missing params, API issues, and timeouts
 - Station-specific service guards are applied for known edge cases (e.g., Bay Ridge Ave excludes non-serving lines; Coney Island shows terminal-compatible direction).
 - Times Square/Herald Square now include all relevant stop prefixes so station-wide results are not artificially limited to one line group.
+- Static station metadata is loaded once at startup from `data/stations.json` for O(1) station lookups.
+- GTFS feed downloads are asynchronous (`aiohttp` + `asyncio.gather`) with latency instrumentation for feed fetch and protobuf parsing.
 
 ## Requirements
 - Python 3.10+
