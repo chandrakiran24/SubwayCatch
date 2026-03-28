@@ -1,0 +1,5 @@
+# Local-only scripts and artifacts (not committed)
+local_tools/
+
+# Local virtual envs
+.venv/

@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import asyncio
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional, Set, Tuple
@@ -29,6 +30,46 @@ logger = logging.getLogger("subway_bot")
 POLLING_CONFLICT_DETECTED = False
 LAST_REQUEST_BY_CHAT: Dict[int, Tuple[str, str]] = {}
 NYC_TZ = pytz.timezone("America/New_York")
+
+
+def _request_id() -> str:
+    """Return a short correlation id for one end-to-end user request."""
+    return uuid.uuid4().hex[:12]
+
+
+def _log_command_event(
+    *,
+    event: str,
+    command: str,
+    request_id: str,
+    update: Optional[Update] = None,
+    station_code: str = "",
+    train_filter: str = "",
+    status: str = "",
+    duration_ms: Optional[float] = None,
+    error: str = "",
+) -> None:
+    """Emit structured command logs for downstream benchmark analysis."""
+    update_id = update.update_id if update else "na"
+    chat_id = update.effective_chat.id if update and update.effective_chat else "na"
+    user_id = update.effective_user.id if update and update.effective_user else "na"
+    logger.info(
+        (
+            "benchmark event=%s command=%s request_id=%s update_id=%s chat_id=%s user_id=%s "
+            "station_code=%s train_filter=%s status=%s duration_ms=%s error=%s"
+        ),
+        event,
+        command,
+        request_id,
+        update_id,
+        chat_id,
+        user_id,
+        station_code or "na",
+        train_filter or "ALL",
+        status or "na",
+        f"{duration_ms:.2f}" if duration_ms is not None else "na",
+        error or "na",
+    )
 
 # Official MTA GTFS-RT feeds by line.
 TRAIN_FEEDS: Dict[str, str] = {
@@ -207,7 +248,11 @@ async def _fetch_feed(
         return feed_url, None, (time.perf_counter() - fetch_started) * 1000
 
 
-async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, object]:
+async def fetch_mta_updates(
+    station_code: str,
+    train_filter: str = "",
+    request_id: str = "",
+) -> Dict[str, object]:
     """Fetch upcoming arrivals for a station, optionally filtered to one train line."""
     station_code = station_code.upper().strip()
     train_filter = train_filter.upper().strip()
@@ -246,7 +291,12 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
         feeds_for_request = set(TRAIN_FEEDS.values())
     feed_urls: List[str] = sorted(feeds_for_request)
 
-    logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
+    logger.info(
+        "Fetching MTA feeds request_id=%s station_code=%s train_filter=%s",
+        request_id or "na",
+        station_code,
+        train_filter or "ALL",
+    )
 
     # Data flow: line -> feed URL -> protobuf bytes -> parsed trip/alert entities.
     lines_in_scope = sorted({train_filter} if train_filter else {line for line, feed in TRAIN_FEEDS.items() if feed in feeds_for_request})
@@ -271,7 +321,12 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 
     parse_started = time.perf_counter()
     for feed_url, content, per_feed_fetch_ms in fetch_results:
-        logger.info("mta_metrics feed_url=%s feed_fetch_ms=%.2f", feed_url, per_feed_fetch_ms)
+        logger.info(
+            "mta_metrics request_id=%s feed_url=%s feed_fetch_ms=%.2f",
+            request_id or "na",
+            feed_url,
+            per_feed_fetch_ms,
+        )
         if content is None:
             continue
         feed = gtfs_realtime_pb2.FeedMessage()
@@ -324,7 +379,8 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
                     alert_set.add(text)
     parse_ms = (time.perf_counter() - parse_started) * 1000
     logger.info(
-        "mta_metrics station_code=%s train_filter=%s feed_fetch_ms=%.2f parse_ms=%.2f",
+        "mta_metrics request_id=%s station_code=%s train_filter=%s feed_fetch_ms=%.2f parse_ms=%.2f",
+        request_id or "na",
         station_code,
         train_filter or "ALL",
         fetch_batch_ms,
@@ -373,6 +429,14 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome and quick-start guidance."""
     del context
+    request_id = _request_id()
+    started = time.perf_counter()
+    _log_command_event(
+        event="command_received",
+        command="/start",
+        request_id=request_id,
+        update=update,
+    )
     message = (
         "<b>NYC Subway Arrival Bot</b>\n\n"
         "<b>Commands</b>\n"
@@ -386,11 +450,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/next D HS34"
     )
     await update.message.reply_text(message, parse_mode="HTML")
+    _log_command_event(
+        event="command_completed",
+        command="/start",
+        request_id=request_id,
+        update=update,
+        status="ok",
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Explain command usage and station-code model."""
     del context
+    request_id = _request_id()
+    started = time.perf_counter()
+    _log_command_event(
+        event="command_received",
+        command="/help",
+        request_id=request_id,
+        update=update,
+    )
     message = (
         "<b>How this bot works</b>\n\n"
         "Commands:\n"
@@ -405,11 +485,27 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Use /stationid to browse all supported station codes."
     )
     await update.message.reply_text(message, parse_mode="HTML")
+    _log_command_event(
+        event="command_completed",
+        command="/help",
+        request_id=request_id,
+        update=update,
+        status="ok",
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
 
 
 async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Display important station codes grouped by borough."""
     del context
+    request_id = _request_id()
+    started = time.perf_counter()
+    _log_command_event(
+        event="command_received",
+        command="/stationid",
+        request_id=request_id,
+        update=update,
+    )
     lines = ["<b>Important Stations</b>", ""]
     for borough, stations in IMPORTANT_STATIONS.items():
         lines.append(f"<b>{escape(borough)}</b>")
@@ -418,6 +514,14 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         lines.append("")
 
     await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
+    _log_command_event(
+        event="command_completed",
+        command="/stationid",
+        request_id=request_id,
+        update=update,
+        status="ok",
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
 
 
 def refresh_reply_markup() -> ReplyKeyboardMarkup:
@@ -489,17 +593,47 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     train_filter, station_code = last_request
-    logger.info("User requested /refresh train=%s station_code=%s", train_filter or "ALL", station_code)
+    request_id = _request_id()
+    started = time.perf_counter()
+    _log_command_event(
+        event="command_received",
+        command="/refresh",
+        request_id=request_id,
+        update=update,
+        station_code=station_code,
+        train_filter=train_filter,
+    )
 
-    result = await fetch_mta_updates(station_code, train_filter)
+    result = await fetch_mta_updates(station_code, train_filter, request_id=request_id)
     if not result["ok"]:
         if update.effective_message:
             await update.effective_message.reply_text(str(result["error"]))
+        _log_command_event(
+            event="command_completed",
+            command="/refresh",
+            request_id=request_id,
+            update=update,
+            station_code=station_code,
+            train_filter=train_filter,
+            status="error",
+            duration_ms=(time.perf_counter() - started) * 1000,
+            error=str(result["error"]),
+        )
         return
 
     message = build_arrival_message(result, train_filter)
     if update.effective_message:
         await update.effective_message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
+    _log_command_event(
+        event="command_completed",
+        command="/refresh",
+        request_id=request_id,
+        update=update,
+        station_code=station_code,
+        train_filter=train_filter,
+        status="ok",
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
 
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -529,19 +663,49 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
+    request_id = _request_id()
+    started = time.perf_counter()
+    _log_command_event(
+        event="command_received",
+        command="/next",
+        request_id=request_id,
+        update=update,
+        station_code=station_code.upper().strip(),
+        train_filter=train_filter,
+    )
 
     if update.effective_chat:
         LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, station_code.upper().strip())
 
-    result = await fetch_mta_updates(station_code, train_filter)
+    result = await fetch_mta_updates(station_code, train_filter, request_id=request_id)
     if not result["ok"]:
         await update.message.reply_text(str(result["error"]))
+        _log_command_event(
+            event="command_completed",
+            command="/next",
+            request_id=request_id,
+            update=update,
+            station_code=station_code.upper().strip(),
+            train_filter=train_filter,
+            status="error",
+            duration_ms=(time.perf_counter() - started) * 1000,
+            error=str(result["error"]),
+        )
         return
 
     train_scope = str(result.get("train_filter", "")).upper()
     message = build_arrival_message(result, train_scope)
     await update.message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
+    _log_command_event(
+        event="command_completed",
+        command="/next",
+        request_id=request_id,
+        update=update,
+        station_code=station_code.upper().strip(),
+        train_filter=train_filter,
+        status="ok",
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
 
 
 
