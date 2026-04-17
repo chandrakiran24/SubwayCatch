@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import asyncio
+from collections import OrderedDict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional, Set, Tuple
@@ -27,8 +28,9 @@ logging.basicConfig(
 logger = logging.getLogger("subway_bot")
 
 POLLING_CONFLICT_DETECTED = False
-LAST_REQUEST_BY_CHAT: Dict[int, Tuple[str, str]] = {}
 NYC_TZ = pytz.timezone("America/New_York")
+_MAX_TRACKED_CHATS = 2_000
+_FEED_LATENCY_TOLERANCE_MINUTES = -1
 
 # Official MTA GTFS-RT feeds by line.
 TRAIN_FEEDS: Dict[str, str] = {
@@ -97,49 +99,81 @@ IMPORTANT_STATIONS: Dict[str, Dict[str, str]] = {
     },
 }
 
+STATION_CODE_TO_NAME: Dict[str, str] = {
+    code: name
+    for group in IMPORTANT_STATIONS.values()
+    for code, name in group.items()
+}
+
+
+class _LRUDict(OrderedDict):
+    """OrderedDict that evicts the oldest entry once the cap is reached."""
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key: int, value: Tuple[str, str]) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if len(self) > self._maxsize:
+            self.popitem(last=False)
+
+
+LAST_REQUEST_BY_CHAT: _LRUDict = _LRUDict(_MAX_TRACKED_CHATS)
+
 # Station alias -> list of MTA stop prefixes. Prefix matching handles direction suffixes (N/S).
 STATION_ALIAS_TO_STOP_PREFIXES: Dict[str, List[str]] = {
-    "HS34": ["D17", "R14"],
-    "TS42": ["R16", "127", "725", "A27", "D16", "901"],
+    "HS34": ["D17", "R17"],
+    "TS42": ["R16", "127", "725", "A27", "D16", "902"],
     "US14": ["R20"],
-    "GC42": ["631"],
+    "GC42": ["631", "723", "901"],
     "CS59": ["A24"],
-    "LP66": ["127"],
+    "LP66": ["124"],
     "CP72": ["A22"],
     "FS": ["A38"],
     "WS4": ["A32"],
-    "ASTOR": ["635"],
-    "CANAL": ["R31"],
+    "ASTOR": ["636"],
+    "CANAL": ["A34", "R23", "135"],
     "CHAM": ["A36"],
-    "BATPK": ["R27"],
+    "BATPK": ["420"],
     "8NYU": ["R21"],
-    "WH": ["R26"],
-    "WTC": ["A55"],
-    "AABC": ["D24"],
-    "JAY": ["A41"],
+    "WH": ["R26", "R27"],
+    "WTC": ["138"],
+    "AABC": ["D24", "R31"],
+    "JAY": ["A41", "R29"],
     "DEK": ["R30"],
-    "BRA": ["R41"],
-    "BDWY": ["A51"],
+    "BRA": ["R42"],
+    "BDWY": ["A51", "J27", "L22"],
     "MYRT": ["M11"],
-    "BED": ["L05"],
-    "WKOS": ["L01"],
+    "BED": ["L08"],
+    "WKOS": ["L20"],
     "FLAT": ["247"],
-    "PROS": ["B16"],
+    "PROS": ["D26"],
     "7AVB": ["D25"],
-    "9STB": ["F21"],
+    "9STB": ["F22"],
     "CHCH": ["D28"],
     "KNGS": ["D35"],
-    "UTIC": ["A65"],
-    "FRKL": ["S03"],
+    "UTIC": ["A48"],
+    "FRKL": ["S01", "A45"],
     "CI": ["D43"],
 }
 
 # Station-level service constraints to avoid showing trains/directions that do not serve the station.
 STATION_ALLOWED_TRAINS: Dict[str, Set[str]] = {
     "BRA": {"R"},
+    "FRKL": {"S"},
+    "WKOS": {"L"},
+    "BED": {"L"},
+    "9STB": {"F", "G"},
+    "PROS": {"B", "Q", "S"},
+    "FLAT": {"2", "5"},
 }
 STATION_ALLOWED_DIRECTIONS: Dict[str, Set[str]] = {
     "CI": {"Uptown"},
+    "FLAT": {"Uptown"},
+    "WKOS": {"Downtown"},
+    "BED": {"Downtown"},
 }
 
 VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,S,Z,N,Q,R,W,1,2,3,4,5,6,7"
@@ -203,7 +237,10 @@ async def _fetch_feed(
             content = await response.read()
             return feed_url, content, (time.perf_counter() - fetch_started) * 1000
     except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-        logger.exception("MTA API request failed for feed=%s: %s", feed_url, exc)
+        logger.warning("MTA feed request failed feed=%s: %s", feed_url, exc)
+        return feed_url, None, (time.perf_counter() - fetch_started) * 1000
+    except Exception as exc:  # noqa: BLE001 - avoid bubbling to gather cancellation
+        logger.exception("Unexpected error fetching feed=%s", feed_url, exc_info=exc)
         return feed_url, None, (time.perf_counter() - fetch_started) * 1000
 
 
@@ -264,9 +301,20 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 
     fetch_batch_started = time.perf_counter()
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        fetch_results = await asyncio.gather(
-            *[_fetch_feed(session, feed_url, api_key) for feed_url in feed_urls]
+        raw_results = await asyncio.gather(
+            *[_fetch_feed(session, feed_url, api_key) for feed_url in feed_urls],
+            return_exceptions=True,
         )
+    fetch_results: List[Tuple[str, Optional[bytes], float]] = []
+    for item in raw_results:
+        if isinstance(item, BaseException):
+            logger.error(
+                "Unexpected exception during feed gather (not caught in _fetch_feed): %s",
+                item,
+                exc_info=item,
+            )
+            continue
+        fetch_results.append(item)
     fetch_batch_ms = (time.perf_counter() - fetch_batch_started) * 1000
 
     parse_started = time.perf_counter()
@@ -310,10 +358,11 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 
                 arrival_dt = datetime.fromtimestamp(stu.arrival.time, tz=NYC_TZ)
                 minutes = int((arrival_dt - now).total_seconds() // 60)
-                if minutes < 0:
+                if minutes < _FEED_LATENCY_TOLERANCE_MINUTES:
                     continue
+                display_minutes = max(0, minutes)
 
-                arrivals.append((minutes, direction, train, arrival_dt.strftime("%I:%M %p")))
+                arrivals.append((display_minutes, direction, train, arrival_dt.strftime("%I:%M %p")))
 
         for entity in feed.entity:
             if not entity.HasField("alert"):
@@ -337,10 +386,7 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
             "error": "No upcoming arrivals found for this request right now.",
         }
 
-    station_name = next(
-        (name for group in IMPORTANT_STATIONS.values() for code, name in group.items() if code == station_code),
-        station_code,
-    )
+    station_name = STATION_CODE_TO_NAME.get(station_code, station_code)
 
     arrivals.sort(key=lambda row: (row[2], row[0]))
 
@@ -561,9 +607,12 @@ async def handle_application_error(update: object, context: ContextTypes.DEFAULT
     logger.exception("Unhandled exception while processing update", exc_info=context.error)
 
     if isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text(
-            "Sorry, something went wrong while processing your request. Please try again."
-        )
+        try:
+            await update.effective_message.reply_text(
+                "Sorry, something went wrong while processing your request. Please try again."
+            )
+        except Exception:
+            logger.exception("Failed to send Telegram error reply to user.")
 
 def main() -> None:
     """Initialize and run the Telegram bot."""
@@ -644,6 +693,13 @@ def main() -> None:
                 logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
                 raise
             time.sleep(retry_delay_seconds)
+        finally:
+            try:
+                asyncio.run(app.shutdown())
+            except RuntimeError:
+                logger.debug("Skipping app.shutdown(); an event loop is already running.")
+            except Exception:
+                logger.exception("Best-effort app.shutdown() failed during restart cleanup.")
 
 
 if __name__ == "__main__":
