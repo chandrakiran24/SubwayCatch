@@ -28,7 +28,12 @@ from html import escape
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 from thefuzz import process
 
-from station_metadata import IMPORTANT_STATIONS, STATION_ALIAS_TO_STOP_PREFIXES
+from station_metadata import (
+    IMPORTANT_STATIONS,
+    STATION_ALIAS_TO_STOP_PREFIXES,
+    get_direction_labels,
+    get_station_info,
+)
 
 # Configure logger format for cloud/runtime observability.
 logging.basicConfig(
@@ -37,11 +42,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("subway_bot")
 
-POLLING_CONFLICT_DETECTED = False
+_POLLING_CONFLICT = threading.Event()
 NYC_TZ = pytz.timezone("America/New_York")
 _MAX_TRACKED_CHATS = 2_000
 _FEED_LATENCY_TOLERANCE_MINUTES = -1
 _FEED_CACHE_TTL_SECONDS = 30
+_DEFAULT_RETRY_DELAY_SECONDS = 10
+_MAX_RETRY_DELAY_SECONDS = 120
 
 # Official MTA GTFS-RT feeds by line.
 TRAIN_FEEDS: Dict[str, str] = {
@@ -53,6 +60,7 @@ TRAIN_FEEDS: Dict[str, str] = {
     "F": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
     "M": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm",
     "G": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g",
+    "L": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l",
     "J": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
     "Z": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz",
     "N": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw",
@@ -67,6 +75,10 @@ TRAIN_FEEDS: Dict[str, str] = {
     "6": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "S": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "GS": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "5X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "6X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "7X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
 
 STATION_CODE_TO_NAME: Dict[str, str] = {
@@ -92,7 +104,7 @@ class _LRUDict(OrderedDict):
 
 LAST_REQUEST_BY_CHAT: _LRUDict = _LRUDict(_MAX_TRACKED_CHATS)
 
-VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,S,Z,N,Q,R,W,1,2,3,4,5,6,7"
+VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,GS,J,L,S,Z,N,Q,R,W,1,2,3,4,5,5X,6,6X,7,7X"
 
 @dataclass
 class FeedCacheEntry:
@@ -133,13 +145,15 @@ class FeedBatchCache:
                 if self._in_flight.get(key) is task:
                     self._in_flight.pop(key, None)
 
-        async with self._lock:
-            self._entries[key] = FeedCacheEntry(fetched_at=time.monotonic(), data=dict(data))
-            self._entries = {
-                existing_key: entry
-                for existing_key, entry in self._entries.items()
-                if time.monotonic() - entry.fetched_at <= self._ttl_seconds
-            }
+        if data:
+            async with self._lock:
+                current_time = time.monotonic()
+                self._entries[key] = FeedCacheEntry(fetched_at=current_time, data=dict(data))
+                self._entries = {
+                    existing_key: entry
+                    for existing_key, entry in self._entries.items()
+                    if current_time - entry.fetched_at <= self._ttl_seconds
+                }
         return dict(data)
 
     async def _fetch_batch(self, session: aiohttp.ClientSession, feed_urls: List[str], api_key: str) -> Dict[str, bytes]:
@@ -160,13 +174,43 @@ class FeedBatchCache:
 
 
 FEED_BATCH_CACHE = FeedBatchCache(ttl_seconds=_FEED_CACHE_TTL_SECONDS)
+_SHARED_SESSION: Optional[aiohttp.ClientSession] = None
+_SHARED_SESSION_LOCK = asyncio.Lock()
 
 
-def direction_from_stop_id(stop_id: str) -> str:
-    """Infer train direction from stop suffix."""
+async def get_shared_session() -> aiohttp.ClientSession:
+    """Return a shared aiohttp session for connection reuse."""
+    global _SHARED_SESSION
+    async with _SHARED_SESSION_LOCK:
+        if _SHARED_SESSION is None or _SHARED_SESSION.closed:
+            timeout = aiohttp.ClientTimeout(total=15)
+            _SHARED_SESSION = aiohttp.ClientSession(timeout=timeout)
+        return _SHARED_SESSION
+
+
+async def close_shared_session() -> None:
+    """Close shared aiohttp session on shutdown."""
+    global _SHARED_SESSION
+    async with _SHARED_SESSION_LOCK:
+        if _SHARED_SESSION and not _SHARED_SESSION.closed:
+            await _SHARED_SESSION.close()
+        _SHARED_SESSION = None
+
+
+def direction_from_stop_id(stop_id: str, gtfs_base_id: str = "") -> str:
+    """Infer user-facing direction label from stop suffix + station metadata."""
+    suffix = ""
     if stop_id.endswith("N"):
+        suffix = "north"
+    elif stop_id.endswith("S"):
+        suffix = "south"
+    if suffix and gtfs_base_id:
+        labels = get_direction_labels(gtfs_base_id)
+        if labels and labels.get(suffix):
+            return str(labels[suffix]).title()
+    if suffix == "north":
         return "Uptown"
-    if stop_id.endswith("S"):
+    if suffix == "south":
         return "Downtown"
     return "Unknown"
 
@@ -199,9 +243,16 @@ def start_health_server() -> None:
         return
 
     def run_server() -> None:
-        server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
-        logger.info("Health server listening on 0.0.0.0:%s", port)
-        server.serve_forever()
+        try:
+            server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+            logger.info("Health server listening on 0.0.0.0:%s", port)
+            server.serve_forever()
+        except OSError as exc:
+            logger.error(
+                "Health server failed to bind to port %s: %s. Render health checks may fail.",
+                port,
+                exc,
+            )
 
     thread = threading.Thread(target=run_server, name="health-server", daemon=True)
     thread.start()
@@ -257,10 +308,18 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
     stop_id_prefixes = STATION_ALIAS_TO_STOP_PREFIXES[station_code]
+    stop_id_prefix_set = set(stop_id_prefixes)
     if train_filter:
         feeds_for_request = {TRAIN_FEEDS[train_filter]}
     else:
-        feeds_for_request = set(TRAIN_FEEDS.values())
+        serving_routes: Set[str] = set()
+        for prefix in stop_id_prefixes:
+            station_info = get_station_info(prefix)
+            if station_info:
+                serving_routes.update(station_info["routes"])
+        feeds_for_request = {TRAIN_FEEDS[route] for route in serving_routes if route in TRAIN_FEEDS}
+        if not feeds_for_request:
+            feeds_for_request = set(TRAIN_FEEDS.values())
     feed_urls: List[str] = sorted(feeds_for_request)
 
     logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
@@ -277,11 +336,11 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
     now = datetime.now(tz=NYC_TZ)
     arrivals: List[Tuple[int, str, str, str]] = []
     alert_set: Set[str] = set()
-    timeout = aiohttp.ClientTimeout(total=15)
-
+    north_label = "Uptown"
+    south_label = "Downtown"
     fetch_batch_started = time.perf_counter()
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        raw_payloads = await FEED_BATCH_CACHE.get_or_fetch(session, feed_urls, api_key)
+    session = await get_shared_session()
+    raw_payloads = await FEED_BATCH_CACHE.get_or_fetch(session, feed_urls, api_key)
     fetch_batch_ms = (time.perf_counter() - fetch_batch_started) * 1000
 
     parse_started = time.perf_counter()
@@ -309,12 +368,18 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 
             for stu in trip_update.stop_time_update:
                 stop_id = stu.stop_id.upper() if stu.stop_id else ""
-                if not any(stop_id.startswith(prefix) for prefix in stop_id_prefixes):
+                stop_base = stop_id[:-1] if stop_id and stop_id[-1] in {"N", "S"} else stop_id
+                if stop_base not in stop_id_prefix_set:
                     continue
 
-                direction = direction_from_stop_id(stop_id)
-                if direction == "Unknown":
+                direction_key = "north" if stop_id.endswith("N") else "south" if stop_id.endswith("S") else ""
+                if not direction_key:
                     continue
+                direction = direction_from_stop_id(stop_id, stop_base)
+                if direction_key == "north":
+                    north_label = direction
+                else:
+                    south_label = direction
 
                 if not stu.HasField("arrival") or stu.arrival.time <= 0:
                     continue
@@ -325,7 +390,7 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
                     continue
                 display_minutes = max(0, minutes)
 
-                arrivals.append((display_minutes, direction, train, arrival_dt.strftime("%I:%M %p")))
+                arrivals.append((display_minutes, direction_key, train, arrival_dt.strftime("%I:%M %p")))
 
         for entity in feed.entity:
             if not entity.HasField("alert"):
@@ -356,12 +421,12 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
     uptown_by_train: Dict[str, List[Tuple[int, str]]] = {}
     downtown_by_train: Dict[str, List[Tuple[int, str]]] = {}
 
-    for minutes, direction, train, local_time in arrivals:
-        if direction == "Uptown":
+    for minutes, direction_key, train, local_time in arrivals:
+        if direction_key == "north":
             uptown_by_train.setdefault(train, [])
             if len(uptown_by_train[train]) < 2:
                 uptown_by_train[train].append((minutes, local_time))
-        elif direction == "Downtown":
+        elif direction_key == "south":
             downtown_by_train.setdefault(train, [])
             if len(downtown_by_train[train]) < 2:
                 downtown_by_train[train].append((minutes, local_time))
@@ -371,8 +436,9 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
         "station_name": station_name,
         "station_code": station_code,
         "train_filter": train_filter,
-        # Backward-compatible key for older render codepaths that still expect direction_filter.
-        "direction_filter": "both",
+        "as_of_local_time": now.strftime("%I:%M %p"),
+        "north_label": north_label,
+        "south_label": south_label,
         "uptown_by_train": dict(sorted(uptown_by_train.items())),
         "downtown_by_train": dict(sorted(downtown_by_train.items())),
         "alerts": sorted(alert_set)[:3],
@@ -393,8 +459,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "<b>Render free-tier note</b>\n"
         "If the bot was idle, the first request can take up to 60 seconds due to a cold start while Render wakes the server.\n\n"
         "<b>Examples</b>\n"
-        "/next HS34\n"
-        "/next D HS34"
+        "/next 34SHS\n"
+        "/next D 34SHS"
     )
     await update.message.reply_text(message, parse_mode="HTML")
 
@@ -412,7 +478,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /next &lt;station_code&gt; - all trains at station, both directions\n"
         "• /next &lt;train&gt; &lt;station_code&gt; - one train at station, both directions\n\n"
         "Train examples: A, D, Q, 2, 7\n"
-        "Station codes are short aliases such as HS34, TS42, GC42.\n"
+        "Station codes are short aliases such as 34SHS, TS42S, GC42S.\n"
         "Use /stationid to browse all supported station codes."
     )
     await update.message.reply_text(message, parse_mode="HTML")
@@ -479,11 +545,13 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
-        f"<b>Direction:</b> {escape(str(result['direction_filter']).title())}",
+        f"<b>As of:</b> {escape(str(result.get('as_of_local_time', 'N/A')))}",
         "",
     ]
 
-    lines.append("<b>Uptown (next 2 per train)</b>")
+    north_label = escape(str(result.get("north_label", "Uptown")))
+    south_label = escape(str(result.get("south_label", "Downtown")))
+    lines.append(f"<b>{north_label} (next 2 per train)</b>")
     if result["uptown_by_train"]:
         for train, arrivals in result["uptown_by_train"].items():
             formatted = ", ".join(
@@ -494,7 +562,7 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
         lines.append("• No upcoming uptown trains")
 
     lines.append("")
-    lines.append("<b>Downtown (next 2 per train)</b>")
+    lines.append(f"<b>{south_label} (next 2 per train)</b>")
     if result["downtown_by_train"]:
         for train, arrivals in result["downtown_by_train"].items():
             formatted = ", ".join(
@@ -521,7 +589,7 @@ def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[st
     if not choices:
         return []
     ranked = process.extract(input_alias.upper().strip(), choices, limit=max_results)
-    return [alias for alias, score in ranked if score >= 60]
+    return [alias for alias, score in ranked if score >= 75]
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -561,7 +629,7 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "Missing parameters. Usage:\n"
             "/next <station_code>\n"
             "/next <train> <station_code>\n"
-            "Examples: /next HS34  or  /next D HS34"
+            "Examples: /next 34SHS  or  /next D 34SHS"
         )
         return
 
@@ -608,10 +676,8 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle uncaught handler/runtime errors from python-telegram-bot."""
-    global POLLING_CONFLICT_DETECTED
-
     if isinstance(context.error, Conflict):
-        POLLING_CONFLICT_DETECTED = True
+        _POLLING_CONFLICT.set()
         logger.error(
             "Telegram polling conflict detected (409). "
             "Only one active bot instance can poll this token. Stopping current instance."
@@ -640,22 +706,27 @@ def main() -> None:
     webhook_base_url = os.getenv("TELEGRAM_WEBHOOK_BASE_URL", "").strip().rstrip("/")
     if not webhook_base_url:
         webhook_base_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if webhook_base_url and not os.getenv("PORT"):
+        logger.warning(
+            "TELEGRAM_WEBHOOK_BASE_URL is set but PORT is not; defaulting to port 10000. "
+            "Set PORT to match your platform's assigned port."
+        )
     webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", token)
     drop_pending_updates = os.getenv("DROP_PENDING_UPDATES", "false").strip().lower() == "true"
 
     if not webhook_base_url:
         start_health_server()
 
-    retry_delay_seconds = int(os.getenv("BOT_STARTUP_RETRY_DELAY_SECONDS", "10"))
+    retry_delay_seconds = int(os.getenv("BOT_STARTUP_RETRY_DELAY_SECONDS", str(_DEFAULT_RETRY_DELAY_SECONDS)))
     max_retries = int(os.getenv("BOT_STARTUP_MAX_RETRIES", "0"))
     # BOT_STARTUP_MAX_RETRIES=0 means retry forever.
+    current_retry_delay = retry_delay_seconds
 
     attempt = 0
-    global POLLING_CONFLICT_DETECTED
 
     while True:
         attempt += 1
-        POLLING_CONFLICT_DETECTED = False
+        _POLLING_CONFLICT.clear()
         logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
 
         app = Application.builder().token(token).build()
@@ -690,7 +761,7 @@ def main() -> None:
                     app.run_polling(drop_pending_updates=drop_pending_updates)
             else:
                 app.run_polling(drop_pending_updates=drop_pending_updates)
-            if POLLING_CONFLICT_DETECTED:
+            if _POLLING_CONFLICT.is_set():
                 logger.warning(
                     "Polling stopped due to Telegram conflict; retrying in %s seconds.",
                     retry_delay_seconds,
@@ -698,24 +769,35 @@ def main() -> None:
                 time.sleep(retry_delay_seconds)
                 continue
             logger.info("Bot polling stopped gracefully.")
+            current_retry_delay = retry_delay_seconds
             break
-        except (TimedOut, NetworkError, Conflict):
+        except Conflict:
             logger.exception(
-                "Telegram API was temporarily unreachable/conflicted during startup/polling. "
-                "Retrying in %s seconds.",
+                "Telegram conflict during startup/polling. Retrying in %s seconds.",
                 retry_delay_seconds,
+            )
+            time.sleep(retry_delay_seconds)
+        except (TimedOut, NetworkError):
+            logger.exception(
+                "Telegram API was temporarily unreachable during startup/polling. "
+                "Retrying in %s seconds.",
+                current_retry_delay,
             )
             if max_retries > 0 and attempt >= max_retries:
                 logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
                 raise
-            time.sleep(retry_delay_seconds)
+            time.sleep(current_retry_delay)
+            current_retry_delay = min(current_retry_delay * 2, _MAX_RETRY_DELAY_SECONDS)
         finally:
             try:
-                asyncio.run(app.shutdown())
-            except RuntimeError:
-                logger.debug("Skipping app.shutdown(); an event loop is already running.")
+                if app.running:
+                    cleanup_loop = asyncio.new_event_loop()
+                    cleanup_loop.run_until_complete(app.shutdown())
+                    cleanup_loop.close()
             except Exception:
                 logger.exception("Best-effort app.shutdown() failed during restart cleanup.")
+
+    asyncio.run(close_shared_session())
 
 
 if __name__ == "__main__":

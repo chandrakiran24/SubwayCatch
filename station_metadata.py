@@ -58,6 +58,37 @@ def _build_route_index(metadata: Dict[str, StationInfo]) -> Dict[str, List[str]]
     return route_to_stations
 
 
+def _validate_config(metadata: Dict[str, StationInfo], aliases: Dict[str, List[str]]) -> None:
+    """Validate alias mapping against known metadata stop IDs."""
+    unknown: List[str] = []
+    ambiguous: List[str] = []
+
+    for alias, prefixes in aliases.items():
+        station_names = {
+            metadata[prefix]["name"].strip().lower()
+            for prefix in prefixes
+            if prefix in metadata
+        }
+        for prefix in prefixes:
+            if prefix not in metadata:
+                unknown.append(f"{alias}->{prefix}")
+        if len(station_names) > 1:
+            ambiguous.append(alias)
+
+    if unknown:
+        logger.warning(
+            "station_alias_to_stop_prefixes references %d unknown stop IDs (sample=%s)",
+            len(unknown),
+            unknown[:20],
+        )
+    if ambiguous:
+        logger.warning(
+            "station_alias_to_stop_prefixes has %d aliases mapped to multiple station names (sample=%s)",
+            len(ambiguous),
+            ambiguous[:20],
+        )
+
+
 STATION_METADATA = _load_station_metadata()
 ROUTE_TO_STATIONS = _build_route_index(STATION_METADATA)
 
@@ -109,6 +140,7 @@ def _load_station_config(path: Path = STATION_CONFIG_PATH) -> Dict[str, Dict[str
 STATION_CONFIG = _load_station_config()
 IMPORTANT_STATIONS = cast(Dict[str, Dict[str, str]], STATION_CONFIG["important_stations"])
 STATION_ALIAS_TO_STOP_PREFIXES = cast(Dict[str, List[str]], STATION_CONFIG["station_alias_to_stop_prefixes"])
+_validate_config(STATION_METADATA, STATION_ALIAS_TO_STOP_PREFIXES)
 
 
 def get_station_info(gtfs_stop_id: str) -> Optional[StationInfo]:
