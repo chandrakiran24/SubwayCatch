@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import asyncio
+from dataclasses import dataclass
 from collections import OrderedDict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,10 +16,19 @@ import aiohttp
 import pytz
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
-from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import Conflict, NetworkError, TimedOut
 from html import escape
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from thefuzz import process
+
+from station_metadata import IMPORTANT_STATIONS, STATION_ALIAS_TO_STOP_PREFIXES
 
 # Configure logger format for cloud/runtime observability.
 logging.basicConfig(
@@ -31,6 +41,7 @@ POLLING_CONFLICT_DETECTED = False
 NYC_TZ = pytz.timezone("America/New_York")
 _MAX_TRACKED_CHATS = 2_000
 _FEED_LATENCY_TOLERANCE_MINUTES = -1
+_FEED_CACHE_TTL_SECONDS = 30
 
 # Official MTA GTFS-RT feeds by line.
 TRAIN_FEEDS: Dict[str, str] = {
@@ -58,47 +69,6 @@ TRAIN_FEEDS: Dict[str, str] = {
     "S": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
 
-# User-friendly station codes requested by product requirements.
-IMPORTANT_STATIONS: Dict[str, Dict[str, str]] = {
-    "Manhattan": {
-        "TS42": "Times Square 42 St",
-        "HS34": "Herald Square 34 St",
-        "US14": "Union Square 14 St",
-        "GC42": "Grand Central 42 St",
-        "CS59": "Columbus Circle 59 St",
-        "LP66": "Lincoln Center 66 St",
-        "CP72": "Central Park West 72 St",
-        "FS": "Fulton Street",
-        "WS4": "West 4 St",
-        "ASTOR": "Astor Place",
-        "CANAL": "Canal Street",
-        "CHAM": "Chambers Street",
-        "BATPK": "Battery Park",
-        "8NYU": "8 St NYU",
-        "WH": "Whitehall Street",
-        "WTC": "WTC Cortlandt",
-    },
-    "Brooklyn": {
-        "AABC": "Atlantic Ave Barclays Center",
-        "JAY": "Jay St MetroTech",
-        "DEK": "DeKalb Ave",
-        "BRA": "Bay Ridge Ave",
-        "BDWY": "Broadway Junction",
-        "MYRT": "Myrtle Ave",
-        "BED": "Bedford Ave",
-        "WKOS": "Wilson Ave",
-        "FLAT": "Flatbush Ave Brooklyn College",
-        "PROS": "Prospect Park",
-        "7AVB": "7 Ave Brooklyn",
-        "9STB": "9 St Brooklyn",
-        "CHCH": "Church Ave",
-        "KNGS": "Kings Highway",
-        "UTIC": "Utica Ave",
-        "FRKL": "Franklin Ave",
-        "CI": "Coney Island Stillwell Av",
-    },
-}
-
 STATION_CODE_TO_NAME: Dict[str, str] = {
     code: name
     for group in IMPORTANT_STATIONS.values()
@@ -122,61 +92,74 @@ class _LRUDict(OrderedDict):
 
 LAST_REQUEST_BY_CHAT: _LRUDict = _LRUDict(_MAX_TRACKED_CHATS)
 
-# Station alias -> list of MTA stop prefixes. Prefix matching handles direction suffixes (N/S).
-STATION_ALIAS_TO_STOP_PREFIXES: Dict[str, List[str]] = {
-    "HS34": ["D17", "R17"],
-    "TS42": ["R16", "127", "725", "A27", "D16", "902"],
-    "US14": ["R20"],
-    "GC42": ["631", "723", "901"],
-    "CS59": ["A24"],
-    "LP66": ["124"],
-    "CP72": ["A22"],
-    "FS": ["A38"],
-    "WS4": ["A32"],
-    "ASTOR": ["636"],
-    "CANAL": ["A34", "R23", "135"],
-    "CHAM": ["A36"],
-    "BATPK": ["420"],
-    "8NYU": ["R21"],
-    "WH": ["R26", "R27"],
-    "WTC": ["138"],
-    "AABC": ["D24", "R31"],
-    "JAY": ["A41", "R29"],
-    "DEK": ["R30"],
-    "BRA": ["R42"],
-    "BDWY": ["A51", "J27", "L22"],
-    "MYRT": ["M11"],
-    "BED": ["L08"],
-    "WKOS": ["L20"],
-    "FLAT": ["247"],
-    "PROS": ["D26"],
-    "7AVB": ["D25"],
-    "9STB": ["F22"],
-    "CHCH": ["D28"],
-    "KNGS": ["D35"],
-    "UTIC": ["A48"],
-    "FRKL": ["S01", "A45"],
-    "CI": ["D43"],
-}
-
-# Station-level service constraints to avoid showing trains/directions that do not serve the station.
-STATION_ALLOWED_TRAINS: Dict[str, Set[str]] = {
-    "BRA": {"R"},
-    "FRKL": {"S"},
-    "WKOS": {"L"},
-    "BED": {"L"},
-    "9STB": {"F", "G"},
-    "PROS": {"B", "Q", "S"},
-    "FLAT": {"2", "5"},
-}
-STATION_ALLOWED_DIRECTIONS: Dict[str, Set[str]] = {
-    "CI": {"Uptown"},
-    "FLAT": {"Uptown"},
-    "WKOS": {"Downtown"},
-    "BED": {"Downtown"},
-}
-
 VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,J,S,Z,N,Q,R,W,1,2,3,4,5,6,7"
+
+@dataclass
+class FeedCacheEntry:
+    fetched_at: float
+    data: Dict[str, bytes]
+
+
+class FeedBatchCache:
+    """Async cache for raw feed payloads with request coalescing."""
+
+    def __init__(self, ttl_seconds: int) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._entries: Dict[Tuple[str, ...], FeedCacheEntry] = {}
+        self._in_flight: Dict[Tuple[str, ...], asyncio.Task[Dict[str, bytes]]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get_or_fetch(self, session: aiohttp.ClientSession, feed_urls: List[str], api_key: str) -> Dict[str, bytes]:
+        key = tuple(sorted(feed_urls))
+        now = time.monotonic()
+        async with self._lock:
+            cached = self._entries.get(key)
+            if cached and now - cached.fetched_at <= self._ttl_seconds:
+                logger.info("Feed cache hit key=%s feeds=%s", key, len(key))
+                return dict(cached.data)
+
+            task = self._in_flight.get(key)
+            if task is None:
+                logger.info("Feed cache miss key=%s", key)
+                task = asyncio.create_task(self._fetch_batch(session, list(key), api_key))
+                self._in_flight[key] = task
+            else:
+                logger.info("Feed cache join in-flight key=%s", key)
+
+        try:
+            data = await task
+        finally:
+            async with self._lock:
+                if self._in_flight.get(key) is task:
+                    self._in_flight.pop(key, None)
+
+        async with self._lock:
+            self._entries[key] = FeedCacheEntry(fetched_at=time.monotonic(), data=dict(data))
+            self._entries = {
+                existing_key: entry
+                for existing_key, entry in self._entries.items()
+                if time.monotonic() - entry.fetched_at <= self._ttl_seconds
+            }
+        return dict(data)
+
+    async def _fetch_batch(self, session: aiohttp.ClientSession, feed_urls: List[str], api_key: str) -> Dict[str, bytes]:
+        raw_results = await asyncio.gather(
+            *[_fetch_feed(session, feed_url, api_key) for feed_url in feed_urls],
+            return_exceptions=True,
+        )
+        payloads: Dict[str, bytes] = {}
+        for item in raw_results:
+            if isinstance(item, BaseException):
+                logger.error("Unexpected exception during feed gather: %s", item, exc_info=item)
+                continue
+            feed_url, content, per_feed_fetch_ms = item
+            logger.info("mta_metrics feed_url=%s feed_fetch_ms=%.2f", feed_url, per_feed_fetch_ms)
+            if content is not None:
+                payloads[feed_url] = content
+        return payloads
+
+
+FEED_BATCH_CACHE = FeedBatchCache(ttl_seconds=_FEED_CACHE_TTL_SECONDS)
 
 
 def direction_from_stop_id(stop_id: str) -> str:
@@ -233,6 +216,14 @@ async def _fetch_feed(
     fetch_started = time.perf_counter()
     try:
         async with session.get(feed_url, headers={"x-api-key": api_key}) as response:
+            if response.status == 429:
+                retry_after = response.headers.get("Retry-After", "unknown")
+                logger.error(
+                    "MTA rate limit hit feed=%s status=429 retry_after=%s",
+                    feed_url,
+                    retry_after,
+                )
+                return feed_url, None, (time.perf_counter() - fetch_started) * 1000
             response.raise_for_status()
             content = await response.read()
             return feed_url, content, (time.perf_counter() - fetch_started) * 1000
@@ -261,15 +252,6 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
             "error": f"Invalid train line '{train_filter}'. Valid trains: {VALID_TRAINS_TEXT}",
         }
 
-    allowed_trains = STATION_ALLOWED_TRAINS.get(station_code)
-    allowed_directions = STATION_ALLOWED_DIRECTIONS.get(station_code)
-
-    if train_filter and allowed_trains and train_filter not in allowed_trains:
-        return {
-            "ok": False,
-            "error": f"{train_filter} does not serve station {station_code}.",
-        }
-
     api_key = os.getenv("MTA_API_KEY")
     if not api_key:
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
@@ -277,8 +259,6 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
     stop_id_prefixes = STATION_ALIAS_TO_STOP_PREFIXES[station_code]
     if train_filter:
         feeds_for_request = {TRAIN_FEEDS[train_filter]}
-    elif allowed_trains:
-        feeds_for_request = {TRAIN_FEEDS[train] for train in allowed_trains}
     else:
         feeds_for_request = set(TRAIN_FEEDS.values())
     feed_urls: List[str] = sorted(feeds_for_request)
@@ -301,26 +281,13 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 
     fetch_batch_started = time.perf_counter()
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        raw_results = await asyncio.gather(
-            *[_fetch_feed(session, feed_url, api_key) for feed_url in feed_urls],
-            return_exceptions=True,
-        )
-    fetch_results: List[Tuple[str, Optional[bytes], float]] = []
-    for item in raw_results:
-        if isinstance(item, BaseException):
-            logger.error(
-                "Unexpected exception during feed gather (not caught in _fetch_feed): %s",
-                item,
-                exc_info=item,
-            )
-            continue
-        fetch_results.append(item)
+        raw_payloads = await FEED_BATCH_CACHE.get_or_fetch(session, feed_urls, api_key)
     fetch_batch_ms = (time.perf_counter() - fetch_batch_started) * 1000
 
     parse_started = time.perf_counter()
-    for feed_url, content, per_feed_fetch_ms in fetch_results:
-        logger.info("mta_metrics feed_url=%s feed_fetch_ms=%.2f", feed_url, per_feed_fetch_ms)
-        if content is None:
+    for feed_url in feed_urls:
+        content = raw_payloads.get(feed_url)
+        if not content:
             continue
         feed = gtfs_realtime_pb2.FeedMessage()
         try:
@@ -339,8 +306,6 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
                 continue
             if train_filter and train != train_filter:
                 continue
-            if allowed_trains and train not in allowed_trains:
-                continue
 
             for stu in trip_update.stop_time_update:
                 stop_id = stu.stop_id.upper() if stu.stop_id else ""
@@ -349,8 +314,6 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 
                 direction = direction_from_stop_id(stop_id)
                 if direction == "Unknown":
-                    continue
-                if allowed_directions and direction not in allowed_directions:
                     continue
 
                 if not stu.HasField("arrival") or stu.arrival.time <= 0:
@@ -427,6 +390,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /stationid\n"
         "• /refresh\n"
         "• /help\n\n"
+        "<b>Render free-tier note</b>\n"
+        "If the bot was idle, the first request can take up to 60 seconds due to a cold start while Render wakes the server.\n\n"
         "<b>Examples</b>\n"
         "/next HS34\n"
         "/next D HS34"
@@ -453,17 +418,49 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode="HTML")
 
 
-async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Display important station codes grouped by borough."""
-    del context
-    lines = ["<b>Important Stations</b>", ""]
-    for borough, stations in IMPORTANT_STATIONS.items():
-        lines.append(f"<b>{escape(borough)}</b>")
-        for code, name in stations.items():
-            lines.append(f"• {escape(code)} → {escape(name)}")
-        lines.append("")
+def _borough_keyboard() -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    current_row: List[InlineKeyboardButton] = []
+    for borough in IMPORTANT_STATIONS:
+        current_row.append(InlineKeyboardButton(borough, callback_data=f"stationid:{borough}"))
+        if len(current_row) == 2:
+            rows.append(current_row)
+            current_row = []
+    if current_row:
+        rows.append(current_row)
+    return InlineKeyboardMarkup(rows)
 
-    await update.message.reply_text("\n".join(lines).strip(), parse_mode="HTML")
+
+async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show borough menu for station aliases."""
+    del context
+    await update.message.reply_text(
+        "Choose a borough to browse station aliases:",
+        reply_markup=_borough_keyboard(),
+    )
+
+
+async def stationid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle borough menu callbacks for /stationid."""
+    del context
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+    borough = query.data.split(":", maxsplit=1)[-1]
+    stations = IMPORTANT_STATIONS.get(borough)
+    if not stations:
+        await query.edit_message_text("Borough menu expired. Please run /stationid again.")
+        return
+
+    lines = [f"<b>{escape(borough)} station aliases</b>", ""]
+    for code, name in stations.items():
+        lines.append(f"• {escape(code)} → {escape(name)}")
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=_borough_keyboard(),
+    )
 
 
 def refresh_reply_markup() -> ReplyKeyboardMarkup:
@@ -516,6 +513,15 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
         lines.append("• No delays reported")
 
     return "\n".join(lines)
+
+
+def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
+    """Return closest known station aliases using fuzzy matching."""
+    choices = list(STATION_ALIAS_TO_STOP_PREFIXES.keys())
+    if not choices:
+        return []
+    ranked = process.extract(input_alias.upper().strip(), choices, limit=max_results)
+    return [alias for alias, score in ranked if score >= 60]
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -577,8 +583,17 @@ async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
 
+    normalized_station = station_code.upper().strip()
+    if normalized_station not in STATION_ALIAS_TO_STOP_PREFIXES:
+        suggestions = build_station_suggestions(normalized_station)
+        suggestion_text = f" Try: {', '.join(suggestions)}." if suggestions else ""
+        await update.message.reply_text(
+            f"Invalid station code '{normalized_station}'. Use /stationid to browse aliases.{suggestion_text}"
+        )
+        return
+
     if update.effective_chat:
-        LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, station_code.upper().strip())
+        LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, normalized_station)
 
     result = await fetch_mta_updates(station_code, train_filter)
     if not result["ok"]:
@@ -647,6 +662,7 @@ def main() -> None:
         app.add_handler(CommandHandler("start", start_command))
         app.add_handler(CommandHandler("help", help_command))
         app.add_handler(CommandHandler("stationid", stationid_command))
+        app.add_handler(CallbackQueryHandler(stationid_callback, pattern=r"^stationid:"))
         app.add_handler(CommandHandler("next", next_train))
         app.add_handler(CommandHandler("refresh", refresh_command))
         app.add_error_handler(handle_application_error)
