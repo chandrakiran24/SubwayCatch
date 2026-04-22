@@ -304,7 +304,9 @@ def _load_station_config(path: Path = STATION_CONFIG_PATH) -> Dict[str, Dict[str
 STATION_CONFIG = _load_station_config()
 IMPORTANT_STATIONS = cast(Dict[str, Dict[str, str]], STATION_CONFIG["important_stations"])
 STATION_ALIAS_TO_STOP_PREFIXES = cast(Dict[str, List[str]], STATION_CONFIG["station_alias_to_stop_prefixes"])
-_validate_config(STATION_METADATA, STATION_ALIAS_TO_STOP_PREFIXES)
+
+# NEW — pass all four required arguments
+_validate_config(STATION_METADATA, STATION_ALIAS_TO_STOP_PREFIXES, STATION_COMPLEXES, ALIAS_TO_COMPLEX)
 
 
 def get_station_info(gtfs_stop_id: str) -> Optional[StationInfo]:
