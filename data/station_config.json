@@ -14,6 +14,8 @@
     "5A": "TIMES_SQ_42",
     "AABC": "ATLANTIC_BARCLAY",
     "BJ": "BWAY_JUNCTION",
+    "CHS": "FULTON_WTC",
+    "COS": "FULTON_WTC",
     "DA": "DEKALB_BK",
     "FS": "FULTON_WTC",
     "GC42S": "GRAND_CENTRAL_42",
@@ -127,12 +129,15 @@
       "WSSF",
       "RS",
       "WC",
+      "COS",
       "WTC",
       "WS",
       "FS",
       "BBCH",
-      "CS",
+      "CHS",
+      "PL",
       "BLS",
+      "CAS",
       "EB",
       "DSES",
       "SS",
@@ -470,8 +475,10 @@
       "BBCH": "Brooklyn Bridge-City Hall",
       "BLS": "Broadway-Lafayette St",
       "BS": "Bleecker St",
+      "CAS": "Canal St",
+      "CHS": "Chambers St",
+      "COS": "Cortlandt St",
       "CP110S": "Cathedral Pkwy (110 St)",
-      "CS": "Chambers St",
       "CSS": "Christopher St-Stonewall",
       "DS": "Dyckman St",
       "DSES": "Delancey St-Essex St",
@@ -487,6 +494,7 @@
       "LA63": "Lexington Av/63 St",
       "LA63S": "Lexington Av/63 St",
       "MH225S": "Marble Hill-225 St",
+      "PL": "Park Pl",
       "PS": "Prince St",
       "RI": "Roosevelt Island",
       "RS": "Rector St",
@@ -1126,23 +1134,22 @@
     "CRP": [
       "L29"
     ],
-    "CS": [
+    "CAS": [
       "135",
-      "137",
-      "231",
       "639",
       "A34",
-      "A36",
-      "F21",
-      "J20",
-      "J22",
-      "J28",
       "M20",
-      "M21",
       "Q01",
-      "R23",
-      "R25",
-      "R28"
+      "R23"
+    ],
+    "CHS": [
+      "137",
+      "A36",
+      "M21"
+    ],
+    "COS": [
+      "138",
+      "R25"
     ],
     "CSS": [
       "133"
@@ -1334,8 +1341,10 @@
       "D27",
       "R34"
     ],
+    "PL": [
+      "228"
+    ],
     "PP": [
-      "228",
       "D26",
       "S03"
     ],
@@ -1482,10 +1491,12 @@
         "C",
         "E",
         "J",
+        "R",
+        "W",
         "Z"
       ],
       "name": "Fulton St–World Trade Center Complex",
-      "note": "Free transfer between Fulton St (2/3/4/5/A/C/J/Z), WTC Cortlandt (1), and World Trade Center (E) via the Dey St Corridor underground passage."
+      "note": "Free transfer between Fulton St (2/3/4/5/A/C/J/Z), WTC Cortlandt (1), Cortlandt St (R/W), and World Trade Center (E) via the Dey St Corridor underground passage."
     },
     "GRAND_CENTRAL_42": {
       "lines": [
