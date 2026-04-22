@@ -13,6 +13,7 @@ A production-ready Telegram bot that returns real-time NYC subway arrivals using
 - Static station metadata is loaded once at startup from `data/stations.json` for O(1) station lookups.
 - GTFS feed downloads are asynchronous (`aiohttp` + `asyncio.gather`) with latency instrumentation for feed fetch and protobuf parsing.
 - Station directions are rendered using metadata labels (e.g., Queens/Manhattan, Canarsie/Manhattan) instead of generic uptown/downtown when available.
+- Shuttle GTFS route IDs are normalized so `GS`, `FS`, and `H` feed trips are treated as `S` for user-facing filtering.
 
 ## Requirements
 - Python 3.10+
