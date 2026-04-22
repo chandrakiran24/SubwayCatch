@@ -652,6 +652,15 @@ def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[st
     return [alias for alias, score in ranked if score >= 75]
 
 
+def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
+    """Return closest known station aliases using fuzzy matching."""
+    choices = list(STATION_ALIAS_TO_STOP_PREFIXES.keys())
+    if not choices:
+        return []
+    ranked = process.extract(input_alias.upper().strip(), choices, limit=max_results)
+    return [alias for alias, score in ranked if score >= 75]
+
+
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Repeat the most recent /next query for this chat."""
     del context
