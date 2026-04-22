@@ -29,9 +29,12 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from thefuzz import process
 
 from station_metadata import (
+    BOROUGH_STATION_ORDER,
     IMPORTANT_STATIONS,
     STATION_ALIAS_TO_STOP_PREFIXES,
+    get_complex_for_alias,
     get_direction_labels,
+    get_lines_for_alias,
     get_station_info,
 )
 
@@ -507,7 +510,7 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def stationid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle borough menu callbacks for /stationid."""
+    """Handle borough menu callbacks for /stationid with sorted and annotated output."""
     del context
     query = update.callback_query
     if not query or not query.data:
@@ -519,11 +522,39 @@ async def stationid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("Borough menu expired. Please run /stationid again.")
         return
 
-    lines = [f"<b>{escape(borough)} station aliases</b>", ""]
-    for code, name in stations.items():
-        lines.append(f"• {escape(code)} → {escape(name)}")
+    geo_order: List[str] = BOROUGH_STATION_ORDER.get(borough, [])
+    rank: Dict[str, int] = {alias: i for i, alias in enumerate(geo_order)}
+    fallback_start = len(geo_order)
+    sorted_codes: List[str] = sorted(stations.keys(), key=lambda code: (rank.get(code, fallback_start), code))
+
+    header = f"<b>{escape(borough)} stations — downtown to uptown</b>\n"
+    body_parts: List[str] = []
+    for code in sorted_codes:
+        name = stations[code]
+        lines_here = get_lines_for_alias(code)
+        is_complex_hub = get_complex_for_alias(code) is not None
+
+        annotation = ""
+        if is_complex_hub:
+            annotation = f" <i>({escape(_format_lines(lines_here))} — transfer hub)</i>"
+        elif len(lines_here) >= _LINE_ANNOTATION_THRESHOLD:
+            annotation = f" <i>({escape(_format_lines(lines_here))})</i>"
+
+        body_parts.append(f"• <b>{escape(code)}</b> → {escape(name)}{annotation}")
+
+    full_body = header + "\n".join(body_parts)
+    if len(full_body) > _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE):
+        kept: List[str] = []
+        running = len(header) + len(_TG_TRUNCATION_NOTE)
+        for part in body_parts:
+            if running + len(part) + 1 > _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE):
+                break
+            kept.append(part)
+            running += len(part) + 1
+        full_body = header + "\n".join(kept) + _TG_TRUNCATION_NOTE
+
     await query.edit_message_text(
-        "\n".join(lines),
+        full_body,
         parse_mode="HTML",
         reply_markup=_borough_keyboard(),
     )
@@ -538,49 +569,87 @@ def refresh_reply_markup() -> ReplyKeyboardMarkup:
     )
 
 
+_MAX_LINE_DISPLAY = 8
+_LINE_ANNOTATION_THRESHOLD = 2
+_TG_MSG_LIMIT = 4096
+_TG_TRUNCATION_NOTE = "\n\n<i>List truncated — use /next &lt;code&gt; to query any station.</i>"
+
+
+def _format_lines(lines: List[str], cap: int = _MAX_LINE_DISPLAY) -> str:
+    shown = lines[:cap]
+    suffix = "..." if len(lines) > cap else ""
+    return "/".join(shown) + suffix
+
+
 def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> str:
     """Build a Telegram HTML message for arrivals output."""
+    station_code = str(result.get("station_code", ""))
     title = "Station Arrivals" if not train_scope else f"{train_scope} Train Arrival"
-    lines = [
+    msg_lines: List[str] = [
         f"<b>{escape(title)}</b>",
         "",
         f"<b>Station:</b> {escape(str(result['station_name']))}",
         f"<b>As of:</b> {escape(str(result.get('as_of_local_time', 'N/A')))}",
-        "",
     ]
 
+    lines_here: List[str] = get_lines_for_alias(station_code)
+    lines_here_set = set(lines_here)
+    if len(lines_here) > 1:
+        msg_lines.append(f"<b>Lines at this station:</b> {escape(_format_lines(lines_here))}")
+
+    complex_info = get_complex_for_alias(station_code)
+    if complex_info:
+        complex_lines: List[str] = complex_info.get("lines", [])
+        transfer_extras = [line for line in complex_lines if line not in lines_here_set]
+        if transfer_extras:
+            msg_lines.append(
+                f"<b>Complex transfers:</b> {escape(_format_lines(transfer_extras))} "
+                f"<i>(free, via underground passage)</i>"
+            )
+        msg_lines.append(f"<i>{escape(complex_info['note'])}</i>")
+
+    msg_lines.append("")
     north_label = escape(str(result.get("north_label", "Uptown")))
     south_label = escape(str(result.get("south_label", "Downtown")))
-    lines.append(f"<b>{north_label} (next 2 per train)</b>")
+    msg_lines.append(f"<b>{north_label} (next 2 per train)</b>")
     if result["uptown_by_train"]:
         for train, arrivals in result["uptown_by_train"].items():
             formatted = ", ".join(
                 f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
             )
-            lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+            msg_lines.append(f"• <b>{escape(train)}</b>: {formatted}")
     else:
-        lines.append("• No upcoming uptown trains")
+        msg_lines.append("• No upcoming trains")
 
-    lines.append("")
-    lines.append(f"<b>{south_label} (next 2 per train)</b>")
+    msg_lines.append("")
+    msg_lines.append(f"<b>{south_label} (next 2 per train)</b>")
     if result["downtown_by_train"]:
         for train, arrivals in result["downtown_by_train"].items():
             formatted = ", ".join(
                 f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
             )
-            lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+            msg_lines.append(f"• <b>{escape(train)}</b>: {formatted}")
     else:
-        lines.append("• No upcoming downtown trains")
+        msg_lines.append("• No upcoming trains")
 
-    lines.append("")
-    lines.append("<b>Service Status</b>")
+    msg_lines.append("")
+    msg_lines.append("<b>Service Status</b>")
     if result["alerts"]:
         for alert in result["alerts"]:
-            lines.append(f"• {escape(alert)}")
+            msg_lines.append(f"• {escape(alert)}")
     else:
-        lines.append("• No delays reported")
+        msg_lines.append("• No delays reported")
 
-    return "\n".join(lines)
+    return "\n".join(msg_lines)
+
+
+def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
+    """Return closest known station aliases using fuzzy matching."""
+    choices = list(STATION_ALIAS_TO_STOP_PREFIXES.keys())
+    if not choices:
+        return []
+    ranked = process.extract(input_alias.upper().strip(), choices, limit=max_results)
+    return [alias for alias, score in ranked if score >= 75]
 
 
 def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
