@@ -1,0 +1,1571 @@
+{
+  "alias_to_complex": {
+    "14M": "UNION_SQ_14",
+    "14S": "UNION_SQ_14",
+    "14SUS": "UNION_SQ_14",
+    "34M": "PENN_34",
+    "34SPS": "PENN_34",
+    "42M": "TIMES_SQ_42",
+    "42SBP": "TIMES_SQ_42",
+    "42SPABT": "TIMES_SQ_42",
+    "4750SRC": "TIMES_SQ_42",
+    "59M": "COLUMBUS_CIRCLE_59",
+    "59SCC": "COLUMBUS_CIRCLE_59",
+    "5A": "TIMES_SQ_42",
+    "AABC": "ATLANTIC_BARCLAY",
+    "BJ": "BWAY_JUNCTION",
+    "DA": "DEKALB_BK",
+    "FS": "FULTON_WTC",
+    "GC42S": "GRAND_CENTRAL_42",
+    "JSM": "JAY_ST",
+    "TS42S": "TIMES_SQ_42",
+    "WC": "FULTON_WTC",
+    "WTC": "FULTON_WTC"
+  },
+  "borough_station_order": {
+    "Brooklyn": [
+      "BR95S",
+      "95B",
+      "BRA",
+      "86B",
+      "77B",
+      "77S",
+      "59B",
+      "59S",
+      "53B",
+      "53S",
+      "45B",
+      "45S",
+      "36S",
+      "36B",
+      "25S",
+      "25B",
+      "9A",
+      "9B",
+      "4A9S",
+      "FHP",
+      "NUA",
+      "8A",
+      "BP",
+      "18A",
+      "20A",
+      "25A",
+      "B50S",
+      "50B",
+      "CISA",
+      "W8SNA",
+      "8B",
+      "NA",
+      "NR",
+      "BB",
+      "SB",
+      "KH",
+      "AX",
+      "AU",
+      "AP",
+      "AN",
+      "AM",
+      "AI",
+      "AJ",
+      "AH",
+      "NP",
+      "OP",
+      "DA",
+      "15SPP",
+      "15B",
+      "S9S",
+      "7A",
+      "F24",
+      "CA",
+      "MWA",
+      "NALH",
+      "BR",
+      "CR",
+      "PP",
+      "GAP",
+      "BG",
+      "EPBM",
+      "FAMEC",
+      "FA",
+      "CHUA",
+      "KA",
+      "PSMEC",
+      "NS",
+      "AABC",
+      "BH",
+      "JSM",
+      "HSS",
+      "AA",
+      "SA",
+      "SARR",
+      "PA",
+      "JS",
+      "NLA",
+      "VSA",
+      "BAAS",
+      "WA",
+      "MA",
+      "MWA",
+      "KS",
+      "GS",
+      "BA",
+      "BNA",
+      "YS",
+      "LA",
+      "CWA",
+      "KTA",
+      "RA",
+      "EA",
+      "GA",
+      "BJ",
+      "LS",
+      "CH",
+      "CRP"
+    ],
+    "Manhattan": [
+      "SF",
+      "WSSF",
+      "RS",
+      "WC",
+      "WTC",
+      "WS",
+      "FS",
+      "BBCH",
+      "CS",
+      "BLS",
+      "EB",
+      "DSES",
+      "SS",
+      "CSS",
+      "4M",
+      "W4SWS",
+      "BS",
+      "PS",
+      "8M",
+      "8SN",
+      "2A",
+      "14SUS",
+      "14S",
+      "14M",
+      "1A",
+      "3A",
+      "6A",
+      "18M",
+      "18S",
+      "23SBC",
+      "23S",
+      "23M",
+      "28S",
+      "28M",
+      "33S",
+      "33M",
+      "34SPS",
+      "34SHS",
+      "34SHY",
+      "34M",
+      "GC42S",
+      "42M",
+      "TS42S",
+      "42SPABT",
+      "42SBP",
+      "4750SRC",
+      "5A",
+      "49S",
+      "49M",
+      "50S",
+      "50M",
+      "51S",
+      "51M",
+      "5A53",
+      "5A53S",
+      "53M",
+      "LA53",
+      "LA53S",
+      "57S",
+      "57S7A",
+      "57M",
+      "5A59",
+      "5A59S",
+      "LA59",
+      "LA59S",
+      "59SCC",
+      "59S",
+      "59M",
+      "LA63",
+      "LA63S",
+      "63M",
+      "RI",
+      "66SLC",
+      "66M",
+      "68SHC",
+      "68M",
+      "72S",
+      "72M",
+      "77M",
+      "79M",
+      "81SMONH",
+      "81M",
+      "86S",
+      "86M",
+      "96S",
+      "96M",
+      "103S",
+      "103M",
+      "CP110S",
+      "110S",
+      "110SMXP",
+      "110M",
+      "116SCU",
+      "116S",
+      "116M",
+      "125S",
+      "125M",
+      "135S",
+      "135M",
+      "137SCC",
+      "137M",
+      "145S",
+      "145M",
+      "148M",
+      "H148S",
+      "155S",
+      "155M",
+      "157S",
+      "157M",
+      "163SAA",
+      "163M",
+      "168SWH",
+      "168S",
+      "168M",
+      "175S",
+      "175M",
+      "181S",
+      "181M",
+      "190S",
+      "190M",
+      "191S",
+      "191M",
+      "DS",
+      "207S",
+      "207M",
+      "215S",
+      "215M",
+      "MH225S",
+      "225M",
+      "I207S"
+    ]
+  },
+  "important_stations": {
+    "Brooklyn": {
+      "105B": "East 105 St",
+      "15B": "15 St-Prospect Park",
+      "15SPP": "15 St-Prospect Park",
+      "18A": "18 Av",
+      "20A": "20 Av",
+      "25A": "25 Av",
+      "25B": "25 St",
+      "25S": "25 St",
+      "36B": "36 St",
+      "36S": "36 St",
+      "45B": "45 St",
+      "45S": "45 St",
+      "4A9S": "4 Av-9 St",
+      "50B": "Bay 50 St",
+      "53B": "53 St",
+      "53S": "53 St",
+      "55B": "55 St",
+      "55S": "55 St",
+      "59B": "59 St",
+      "62B": "62 St",
+      "62S": "62 St",
+      "71B": "71 St",
+      "71S": "71 St",
+      "77B": "77 St",
+      "77S": "77 St",
+      "79B": "79 St",
+      "79S": "79 St",
+      "7A": "7 Av",
+      "86B": "86 St",
+      "8A": "8 Av",
+      "8B": "W 8 St-NY Aquarium",
+      "95B": "Bay Ridge-95 St",
+      "9A": "9 Av",
+      "9B": "4 Av-9 St",
+      "AA": "Atlantic Av",
+      "AABC": "Atlantic Av-Barclays Ctr",
+      "AH": "Avenue H",
+      "AI": "Avenue I",
+      "AJ": "Avenue J",
+      "AM": "Avenue M",
+      "AN": "Avenue N",
+      "AP": "Avenue P",
+      "AU": "Avenue U",
+      "AX": "Avenue X",
+      "B": "Broadway",
+      "B50S": "Bay 50 St",
+      "BA": "Bedford Av",
+      "BAAS": "Bushwick Av-Aberdeen St",
+      "BB": "Brighton Beach",
+      "BG": "Botanic Garden",
+      "BH": "Borough Hall",
+      "BJ": "Broadway Junction",
+      "BNA": "Bedford-Nostrand Avs",
+      "BP": "Bay Pkwy",
+      "BR": "Beverley Rd",
+      "BR95S": "Bay Ridge-95 St",
+      "BRA": "Bay Ridge Av",
+      "CA": "Classon Av",
+      "CH": "Cypress Hills",
+      "CHUA": "Crown Hts-Utica Av",
+      "CISA": "Coney Island-Stillwell Av",
+      "CR": "Cortelyou Rd",
+      "CRP": "Canarsie-Rockaway Pkwy",
+      "CWA": "Clinton-Washington Avs",
+      "DA": "DeKalb Av",
+      "E105S": "East 105 St",
+      "EA": "Euclid Av",
+      "EPBM": "Eastern Pkwy-Brooklyn Museum",
+      "FA": "Franklin Av",
+      "FABC": "Flatbush Av-Brooklyn College",
+      "FAMEC": "Franklin Av-Medgar Evers College",
+      "FHP": "Fort Hamilton Pkwy",
+      "GA": "Grant Av",
+      "GAP": "Grand Army Plaza",
+      "GS": "Grand St",
+      "HS": "Hoyt St",
+      "HSS": "Hoyt-Schermerhorn Sts",
+      "JS": "Junius St",
+      "JSM": "Jay St-MetroTech",
+      "KA": "Knickerbocker Av",
+      "KH": "Kings Hwy",
+      "KS": "Kosciuszko St",
+      "KTA": "Kingston-Throop Avs",
+      "LA": "Liberty Av",
+      "LS": "Lorimer St",
+      "MA": "Myrtle Av",
+      "MWA": "Myrtle-Wyckoff Avs",
+      "NA": "Neptune Av",
+      "NALH": "Newkirk Av-Little Haiti",
+      "NLA": "New Lots Av",
+      "NP": "Newkirk Plaza",
+      "NR": "Neck Rd",
+      "NS": "Nevins St",
+      "NUA": "New Utrecht Av",
+      "OP": "Ocean Pkwy",
+      "PA": "Pennsylvania Av",
+      "PP": "Prospect Park",
+      "PSMEC": "President St-Medgar Evers College",
+      "RA": "Ralph Av",
+      "S9S": "Smith-9 Sts",
+      "SA": "Sutter Av",
+      "SARR": "Sutter Av-Rutland Rd",
+      "SB": "Sheepshead Bay",
+      "UA": "Utica Av",
+      "US": "Union St",
+      "VSA": "Van Siclen Av",
+      "W8SNA": "W 8 St-NY Aquarium",
+      "WA": "Wilson Av",
+      "YS": "York St"
+    },
+    "Manhattan": {
+      "103M": "103 St",
+      "103S": "103 St",
+      "110M": "Cathedral Pkwy (110 St)",
+      "110S": "110 St",
+      "110SMXP": "110 St-Malcolm X Plaza",
+      "116M": "116 St",
+      "116S": "116 St",
+      "116SCU": "116 St-Columbia University",
+      "125M": "125 St",
+      "125S": "125 St",
+      "135M": "135 St",
+      "135S": "135 St",
+      "137M": "137 St-City College",
+      "137SCC": "137 St-City College",
+      "145M": "145 St",
+      "145S": "145 St",
+      "148M": "Harlem-148 St",
+      "14M": "14 St",
+      "14S": "14 St",
+      "14SUS": "14 St-Union Sq",
+      "155M": "155 St",
+      "155S": "155 St",
+      "157M": "157 St",
+      "157S": "157 St",
+      "163M": "163 St-Amsterdam Av",
+      "163SAA": "163 St-Amsterdam Av",
+      "168M": "168 St-Washington Hts",
+      "168S": "168 St",
+      "168SWH": "168 St-Washington Hts",
+      "175M": "175 St",
+      "175S": "175 St",
+      "181M": "181 St",
+      "181S": "181 St",
+      "18M": "18 St",
+      "18S": "18 St",
+      "190M": "190 St",
+      "190S": "190 St",
+      "191M": "191 St",
+      "191S": "191 St",
+      "1A": "1 Av",
+      "207M": "Inwood-207 St",
+      "207S": "207 St",
+      "215M": "215 St",
+      "215S": "215 St",
+      "225M": "Marble Hill-225 St",
+      "23M": "23 St",
+      "23S": "23 St",
+      "23SBC": "23 St-Baruch College",
+      "28M": "28 St",
+      "28S": "28 St",
+      "2A": "2 Av",
+      "33M": "33 St",
+      "33S": "33 St",
+      "34M": "34 St-Hudson Yards",
+      "34SHS": "34 St-Herald Sq",
+      "34SHY": "34 St-Hudson Yards",
+      "34SPS": "34 St-Penn Station",
+      "3A": "3 Av",
+      "42M": "Times Sq-42 St",
+      "42SBP": "42 St-Bryant Pk",
+      "42SPABT": "42 St-Port Authority Bus Terminal",
+      "4750SRC": "47-50 Sts-Rockefeller Ctr",
+      "49M": "49 St",
+      "49S": "49 St",
+      "4M": "W 4 St-Wash Sq",
+      "50M": "50 St",
+      "50S": "50 St",
+      "51M": "51 St",
+      "51S": "51 St",
+      "53M": "5 Av/53 St",
+      "57M": "57 St-7 Av",
+      "57S": "57 St",
+      "57S7A": "57 St-7 Av",
+      "59M": "59 St",
+      "59S": "59 St",
+      "59SCC": "59 St-Columbus Circle",
+      "5A": "5 Av",
+      "5A53": "5 Av/53 St",
+      "5A53S": "5 Av/53 St",
+      "5A59": "5 Av/59 St",
+      "5A59S": "5 Av/59 St",
+      "63M": "Lexington Av/63 St",
+      "66M": "66 St-Lincoln Center",
+      "66SLC": "66 St-Lincoln Center",
+      "68M": "68 St-Hunter College",
+      "68SHC": "68 St-Hunter College",
+      "6A": "6 Av",
+      "72M": "72 St",
+      "72S": "72 St",
+      "77M": "77 St",
+      "79M": "79 St",
+      "81M": "81 St-Museum of Natural History",
+      "81SMONH": "81 St-Museum of Natural History",
+      "86M": "86 St",
+      "86S": "86 St",
+      "8M": "8 St-NYU",
+      "8SN": "8 St-NYU",
+      "96M": "96 St",
+      "96S": "96 St",
+      "BBCH": "Brooklyn Bridge-City Hall",
+      "BLS": "Broadway-Lafayette St",
+      "BS": "Bleecker St",
+      "CP110S": "Cathedral Pkwy (110 St)",
+      "CS": "Chambers St",
+      "CSS": "Christopher St-Stonewall",
+      "DS": "Dyckman St",
+      "DSES": "Delancey St-Essex St",
+      "EB": "East Broadway",
+      "FS": "Fulton St",
+      "GC42S": "Grand Central-42 St",
+      "H148S": "Harlem-148 St",
+      "I207S": "Inwood-207 St",
+      "LA53": "Lexington Av/53 St",
+      "LA53S": "Lexington Av/53 St",
+      "LA59": "Lexington Av/59 St",
+      "LA59S": "Lexington Av/59 St",
+      "LA63": "Lexington Av/63 St",
+      "LA63S": "Lexington Av/63 St",
+      "MH225S": "Marble Hill-225 St",
+      "PS": "Prince St",
+      "RI": "Roosevelt Island",
+      "RS": "Rector St",
+      "SF": "South Ferry",
+      "SS": "Sterling St",
+      "TS42S": "Times Sq-42 St",
+      "W4SWS": "W 4 St-Wash Sq",
+      "WC": "WTC Cortlandt",
+      "WS": "Wall St",
+      "WSSF": "Whitehall St-South Ferry",
+      "WTC": "World Trade Center"
+    }
+  },
+  "station_alias_to_stop_prefixes": {
+    "103M": [
+      "119",
+      "624",
+      "A18"
+    ],
+    "103S": [
+      "119",
+      "624",
+      "A18"
+    ],
+    "105B": [
+      "L28"
+    ],
+    "110M": [
+      "118",
+      "227",
+      "623",
+      "A17"
+    ],
+    "110S": [
+      "623"
+    ],
+    "110SMXP": [
+      "227"
+    ],
+    "116M": [
+      "117",
+      "226",
+      "622",
+      "A16"
+    ],
+    "116S": [
+      "226",
+      "622",
+      "A16"
+    ],
+    "116SCU": [
+      "117"
+    ],
+    "125M": [
+      "116",
+      "225",
+      "621",
+      "A15"
+    ],
+    "125S": [
+      "116",
+      "225",
+      "621",
+      "A15"
+    ],
+    "135M": [
+      "224",
+      "A14"
+    ],
+    "135S": [
+      "224",
+      "A14"
+    ],
+    "137M": [
+      "115"
+    ],
+    "137SCC": [
+      "115"
+    ],
+    "145M": [
+      "114",
+      "302",
+      "A12",
+      "D13"
+    ],
+    "145S": [
+      "114",
+      "302",
+      "A12",
+      "D13"
+    ],
+    "148M": [
+      "301"
+    ],
+    "14M": [
+      "132",
+      "635",
+      "A31",
+      "D19",
+      "L03",
+      "R20"
+    ],
+    "14S": [
+      "132",
+      "A31",
+      "D19"
+    ],
+    "14SUS": [
+      "635",
+      "L03",
+      "R20"
+    ],
+    "155M": [
+      "A11",
+      "D12"
+    ],
+    "155S": [
+      "A11",
+      "D12"
+    ],
+    "157M": [
+      "113"
+    ],
+    "157S": [
+      "113"
+    ],
+    "15B": [
+      "F25"
+    ],
+    "15SPP": [
+      "F25"
+    ],
+    "163M": [
+      "A10"
+    ],
+    "163SAA": [
+      "A10"
+    ],
+    "168M": [
+      "112",
+      "A09"
+    ],
+    "168S": [
+      "A09"
+    ],
+    "168SWH": [
+      "112"
+    ],
+    "175M": [
+      "A07"
+    ],
+    "175S": [
+      "A07"
+    ],
+    "181M": [
+      "111",
+      "A06"
+    ],
+    "181S": [
+      "111",
+      "A06"
+    ],
+    "18A": [
+      "B19",
+      "F30",
+      "N05"
+    ],
+    "18M": [
+      "131"
+    ],
+    "18S": [
+      "131"
+    ],
+    "190M": [
+      "A05"
+    ],
+    "190S": [
+      "A05"
+    ],
+    "191M": [
+      "110"
+    ],
+    "191S": [
+      "110"
+    ],
+    "1A": [
+      "L06"
+    ],
+    "207M": [
+      "108",
+      "A02"
+    ],
+    "207S": [
+      "108"
+    ],
+    "20A": [
+      "B20",
+      "N06"
+    ],
+    "215M": [
+      "107"
+    ],
+    "215S": [
+      "107"
+    ],
+    "225M": [
+      "106"
+    ],
+    "23M": [
+      "130",
+      "634",
+      "A30",
+      "D18",
+      "R19"
+    ],
+    "23S": [
+      "130",
+      "A30",
+      "D18",
+      "R19"
+    ],
+    "23SBC": [
+      "634"
+    ],
+    "25A": [
+      "B22"
+    ],
+    "25B": [
+      "R35"
+    ],
+    "25S": [
+      "R35"
+    ],
+    "28M": [
+      "129",
+      "633",
+      "R18"
+    ],
+    "28S": [
+      "129",
+      "633",
+      "R18"
+    ],
+    "2A": [
+      "F14"
+    ],
+    "33M": [
+      "632"
+    ],
+    "33S": [
+      "632"
+    ],
+    "34M": [
+      "128",
+      "726",
+      "A28",
+      "D17",
+      "R17"
+    ],
+    "34SHS": [
+      "D17",
+      "R17"
+    ],
+    "34SHY": [
+      "726"
+    ],
+    "34SPS": [
+      "128",
+      "A28"
+    ],
+    "36B": [
+      "R36"
+    ],
+    "36S": [
+      "R36"
+    ],
+    "3A": [
+      "L05"
+    ],
+    "42M": [
+      "127",
+      "631",
+      "723",
+      "725",
+      "901",
+      "902",
+      "A27",
+      "D16",
+      "R16"
+    ],
+    "42SBP": [
+      "D16"
+    ],
+    "42SPABT": [
+      "A27"
+    ],
+    "45B": [
+      "R39"
+    ],
+    "45S": [
+      "R39"
+    ],
+    "4750SRC": [
+      "D15"
+    ],
+    "49M": [
+      "R15"
+    ],
+    "49S": [
+      "R15"
+    ],
+    "4A9S": [
+      "F23",
+      "R33"
+    ],
+    "4M": [
+      "A32",
+      "D20"
+    ],
+    "50B": [
+      "B14",
+      "B23"
+    ],
+    "50M": [
+      "126",
+      "A25"
+    ],
+    "50S": [
+      "126",
+      "A25",
+      "B14"
+    ],
+    "51M": [
+      "630"
+    ],
+    "51S": [
+      "630"
+    ],
+    "53B": [
+      "R40"
+    ],
+    "53M": [
+      "F11",
+      "F12"
+    ],
+    "53S": [
+      "R40"
+    ],
+    "55B": [
+      "B15"
+    ],
+    "55S": [
+      "B15"
+    ],
+    "57M": [
+      "B10",
+      "R14"
+    ],
+    "57S": [
+      "B10"
+    ],
+    "57S7A": [
+      "R14"
+    ],
+    "59B": [
+      "R41"
+    ],
+    "59M": [
+      "125",
+      "629",
+      "A24",
+      "R11",
+      "R13"
+    ],
+    "59S": [
+      "629",
+      "R41"
+    ],
+    "59SCC": [
+      "125",
+      "A24"
+    ],
+    "5A": [
+      "724"
+    ],
+    "5A53": [
+      "F12"
+    ],
+    "5A53S": [
+      "F12"
+    ],
+    "5A59": [
+      "R13"
+    ],
+    "5A59S": [
+      "R13"
+    ],
+    "62B": [
+      "B16"
+    ],
+    "62S": [
+      "B16"
+    ],
+    "63M": [
+      "B08"
+    ],
+    "66M": [
+      "124"
+    ],
+    "66SLC": [
+      "124"
+    ],
+    "68M": [
+      "628"
+    ],
+    "68SHC": [
+      "628"
+    ],
+    "6A": [
+      "L02"
+    ],
+    "71B": [
+      "B17"
+    ],
+    "71S": [
+      "B17"
+    ],
+    "72M": [
+      "123",
+      "A22",
+      "Q03"
+    ],
+    "72S": [
+      "123",
+      "A22",
+      "Q03"
+    ],
+    "77B": [
+      "R43"
+    ],
+    "77M": [
+      "627"
+    ],
+    "77S": [
+      "627",
+      "R43"
+    ],
+    "79B": [
+      "B18"
+    ],
+    "79M": [
+      "122"
+    ],
+    "79S": [
+      "122",
+      "B18"
+    ],
+    "7A": [
+      "D14",
+      "D25",
+      "F24"
+    ],
+    "81M": [
+      "A21"
+    ],
+    "81SMONH": [
+      "A21"
+    ],
+    "86B": [
+      "N10",
+      "R44"
+    ],
+    "86M": [
+      "121",
+      "626",
+      "A20",
+      "Q04"
+    ],
+    "86S": [
+      "121",
+      "626",
+      "A20",
+      "N10",
+      "Q04",
+      "R44"
+    ],
+    "8A": [
+      "L01",
+      "N02"
+    ],
+    "8B": [
+      "D42"
+    ],
+    "8M": [
+      "R21"
+    ],
+    "8SN": [
+      "R21"
+    ],
+    "95B": [
+      "R45"
+    ],
+    "96M": [
+      "120",
+      "625",
+      "A19",
+      "Q05"
+    ],
+    "96S": [
+      "120",
+      "625",
+      "A19",
+      "Q05"
+    ],
+    "9A": [
+      "B12"
+    ],
+    "9B": [
+      "F23",
+      "R33"
+    ],
+    "AA": [
+      "J24",
+      "L24"
+    ],
+    "AABC": [
+      "235",
+      "D24",
+      "R31"
+    ],
+    "AH": [
+      "D32"
+    ],
+    "AI": [
+      "F31"
+    ],
+    "AJ": [
+      "D33"
+    ],
+    "AM": [
+      "D34"
+    ],
+    "AN": [
+      "F33"
+    ],
+    "AP": [
+      "F34"
+    ],
+    "AU": [
+      "D37",
+      "F36",
+      "N09"
+    ],
+    "AX": [
+      "F38"
+    ],
+    "B": [
+      "G30",
+      "M19"
+    ],
+    "B50S": [
+      "B23"
+    ],
+    "BA": [
+      "L08"
+    ],
+    "BAAS": [
+      "L21"
+    ],
+    "BB": [
+      "D40"
+    ],
+    "BBCH": [
+      "640"
+    ],
+    "BG": [
+      "420",
+      "S04"
+    ],
+    "BH": [
+      "232",
+      "423"
+    ],
+    "BJ": [
+      "A51",
+      "J27",
+      "L22"
+    ],
+    "BLS": [
+      "D21"
+    ],
+    "BNA": [
+      "G33"
+    ],
+    "BP": [
+      "B21",
+      "F32",
+      "N07"
+    ],
+    "BR": [
+      "245",
+      "D29"
+    ],
+    "BR95S": [
+      "R45"
+    ],
+    "BRA": [
+      "R42"
+    ],
+    "BS": [
+      "637"
+    ],
+    "CA": [
+      "244",
+      "D28",
+      "F27",
+      "G34",
+      "M10"
+    ],
+    "CH": [
+      "J19",
+      "R24"
+    ],
+    "CHUA": [
+      "250"
+    ],
+    "CISA": [
+      "D43"
+    ],
+    "CP110S": [
+      "118",
+      "A17"
+    ],
+    "CR": [
+      "D30"
+    ],
+    "CRP": [
+      "L29"
+    ],
+    "CS": [
+      "135",
+      "137",
+      "231",
+      "639",
+      "A34",
+      "A36",
+      "F21",
+      "J20",
+      "J22",
+      "J28",
+      "M20",
+      "M21",
+      "Q01",
+      "R23",
+      "R25",
+      "R28"
+    ],
+    "CSS": [
+      "133"
+    ],
+    "CWA": [
+      "A44",
+      "G35"
+    ],
+    "DA": [
+      "F29",
+      "L16",
+      "R30"
+    ],
+    "DS": [
+      "109",
+      "A03"
+    ],
+    "DSES": [
+      "F15",
+      "M18"
+    ],
+    "E105S": [
+      "L28"
+    ],
+    "EA": [
+      "A55"
+    ],
+    "EB": [
+      "F16"
+    ],
+    "EPBM": [
+      "238"
+    ],
+    "FA": [
+      "A45",
+      "G31",
+      "M12",
+      "S01"
+    ],
+    "FABC": [
+      "247"
+    ],
+    "FAMEC": [
+      "239"
+    ],
+    "FHP": [
+      "B13",
+      "F26",
+      "N03"
+    ],
+    "FS": [
+      "136",
+      "229",
+      "418",
+      "A38",
+      "G36",
+      "M22"
+    ],
+    "GA": [
+      "A57",
+      "G26",
+      "J30",
+      "L11"
+    ],
+    "GAP": [
+      "237"
+    ],
+    "GC42S": [
+      "631",
+      "723",
+      "901"
+    ],
+    "GS": [
+      "D22",
+      "L12"
+    ],
+    "H148S": [
+      "301"
+    ],
+    "HS": [
+      "134",
+      "233",
+      "A40",
+      "J29",
+      "M14"
+    ],
+    "HSS": [
+      "A42"
+    ],
+    "I207S": [
+      "A02"
+    ],
+    "JS": [
+      "254",
+      "L15"
+    ],
+    "JSM": [
+      "A41",
+      "R29"
+    ],
+    "KA": [
+      "249",
+      "M09"
+    ],
+    "KH": [
+      "D35",
+      "F35",
+      "N08"
+    ],
+    "KS": [
+      "J31"
+    ],
+    "KTA": [
+      "A47"
+    ],
+    "LA": [
+      "A43",
+      "A52",
+      "L26"
+    ],
+    "LA53": [
+      "F11"
+    ],
+    "LA53S": [
+      "F11"
+    ],
+    "LA59": [
+      "R11"
+    ],
+    "LA59S": [
+      "R11"
+    ],
+    "LA63": [
+      "B08"
+    ],
+    "LA63S": [
+      "B08"
+    ],
+    "LS": [
+      "L10",
+      "M13"
+    ],
+    "MA": [
+      "G29",
+      "L13",
+      "L14",
+      "M11",
+      "M16"
+    ],
+    "MH225S": [
+      "106"
+    ],
+    "MWA": [
+      "G32",
+      "L17",
+      "M08"
+    ],
+    "NA": [
+      "248",
+      "A46",
+      "F39",
+      "G28",
+      "J21"
+    ],
+    "NALH": [
+      "246"
+    ],
+    "NLA": [
+      "257",
+      "L27"
+    ],
+    "NP": [
+      "D31"
+    ],
+    "NR": [
+      "D38"
+    ],
+    "NS": [
+      "234"
+    ],
+    "NUA": [
+      "N04"
+    ],
+    "OP": [
+      "D41"
+    ],
+    "PA": [
+      "255",
+      "D27",
+      "R34"
+    ],
+    "PP": [
+      "228",
+      "D26",
+      "S03"
+    ],
+    "PS": [
+      "R22"
+    ],
+    "PSMEC": [
+      "241"
+    ],
+    "RA": [
+      "253",
+      "A49",
+      "A50"
+    ],
+    "RI": [
+      "B06"
+    ],
+    "RS": [
+      "139",
+      "R26"
+    ],
+    "S9S": [
+      "F22"
+    ],
+    "SA": [
+      "252",
+      "A54",
+      "L25"
+    ],
+    "SARR": [
+      "251"
+    ],
+    "SB": [
+      "D39"
+    ],
+    "SF": [
+      "142"
+    ],
+    "SS": [
+      "242",
+      "638",
+      "A33"
+    ],
+    "TS42S": [
+      "127",
+      "725",
+      "902",
+      "R16"
+    ],
+    "UA": [
+      "A48"
+    ],
+    "US": [
+      "R32"
+    ],
+    "VSA": [
+      "256",
+      "A53",
+      "J23"
+    ],
+    "W4SWS": [
+      "A32",
+      "D20"
+    ],
+    "W8SNA": [
+      "D42"
+    ],
+    "WA": [
+      "L20"
+    ],
+    "WC": [
+      "138"
+    ],
+    "WS": [
+      "230",
+      "243",
+      "419"
+    ],
+    "WSSF": [
+      "R27"
+    ],
+    "WTC": [
+      "E01"
+    ],
+    "YS": [
+      "F18"
+    ]
+  },
+  "station_complexes": {
+    "ATLANTIC_BARCLAY": {
+      "lines": [
+        "2",
+        "3",
+        "4",
+        "5",
+        "B",
+        "D",
+        "N",
+        "Q",
+        "R"
+      ],
+      "name": "Atlantic Av–Barclays Ctr",
+      "note": "Free transfer between all lines within the station complex. LIRR accessible via the same building."
+    },
+    "BWAY_JUNCTION": {
+      "lines": [
+        "A",
+        "C",
+        "J",
+        "L",
+        "Z"
+      ],
+      "name": "Broadway Junction",
+      "note": "Free transfer between A/C, J/Z, and L trains within the Broadway Junction complex."
+    },
+    "COLUMBUS_CIRCLE_59": {
+      "lines": [
+        "1",
+        "A",
+        "B",
+        "C",
+        "D"
+      ],
+      "name": "59 St–Columbus Circle",
+      "note": "Free transfer between the 1 train and A/B/C/D trains within the station complex."
+    },
+    "DEKALB_BK": {
+      "lines": [
+        "B",
+        "Q",
+        "R"
+      ],
+      "name": "DeKalb Av (Brooklyn)",
+      "note": "Free transfer between B/Q and R trains at DeKalb Av."
+    },
+    "FULTON_WTC": {
+      "lines": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "A",
+        "C",
+        "E",
+        "J",
+        "Z"
+      ],
+      "name": "Fulton St–World Trade Center Complex",
+      "note": "Free transfer between Fulton St (2/3/4/5/A/C/J/Z), WTC Cortlandt (1), and World Trade Center (E) via the Dey St Corridor underground passage."
+    },
+    "GRAND_CENTRAL_42": {
+      "lines": [
+        "4",
+        "5",
+        "6",
+        "7",
+        "S"
+      ],
+      "name": "Grand Central–42 St",
+      "note": "Free transfer between 4/5/6, 7, and S shuttle. S shuttle connects west to the Times Square complex."
+    },
+    "JACKSON_HTS": {
+      "lines": [
+        "E",
+        "F",
+        "M",
+        "R",
+        "7"
+      ],
+      "name": "Jackson Heights–Roosevelt Av",
+      "note": "Free transfer between E/F/M/R and the 7 train at Roosevelt Av."
+    },
+    "JAY_ST": {
+      "lines": [
+        "A",
+        "C",
+        "F",
+        "R"
+      ],
+      "name": "Jay St–MetroTech",
+      "note": "Free transfer between A/C, F, and R trains within the station complex."
+    },
+    "PENN_34": {
+      "lines": [
+        "1",
+        "2",
+        "3",
+        "A",
+        "C",
+        "E"
+      ],
+      "name": "34 St–Penn Station",
+      "note": "Free transfer between 1/2/3 and A/C/E within the station. 34 St-Herald Sq (B/D/F/M, N/Q/R/W) is a separate station a short street-level walk away."
+    },
+    "TIMES_SQ_42": {
+      "lines": [
+        "1",
+        "2",
+        "3",
+        "7",
+        "A",
+        "C",
+        "E",
+        "B",
+        "D",
+        "F",
+        "M",
+        "N",
+        "Q",
+        "R",
+        "W",
+        "S"
+      ],
+      "name": "Times Square–42 St Complex",
+      "note": "Free transfers between 1/2/3, 7, N/Q/R/W, A/C/E, and B/D/F/M via underground passages. S shuttle connects to Grand Central."
+    },
+    "UNION_SQ_14": {
+      "lines": [
+        "4",
+        "5",
+        "6",
+        "L",
+        "N",
+        "Q",
+        "R",
+        "W"
+      ],
+      "name": "14 St–Union Square",
+      "note": "Free transfer between all lines within the Union Square station complex."
+    }
+  }
+}
