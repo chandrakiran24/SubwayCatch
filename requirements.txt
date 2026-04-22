@@ -4,3 +4,4 @@ protobuf>=4.25.0
 gtfs-realtime-bindings>=1.0.0
 pytz>=2024.1
 python-dotenv>=1.0.1
+thefuzz>=0.22.1
