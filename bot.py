@@ -25,13 +25,21 @@ from telegram import (
 )
 from telegram.error import Conflict, NetworkError, TimedOut
 from html import escape
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
-from thefuzz import process
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+from thefuzz import fuzz, process
 
 from station_metadata import (
     BOROUGH_STATION_ORDER,
     IMPORTANT_STATIONS,
     STATION_ALIAS_TO_STOP_PREFIXES,
+    STATION_METADATA,
     get_complex_for_alias,
     get_direction_labels,
     get_lines_for_alias,
@@ -48,10 +56,14 @@ logger = logging.getLogger("subway_bot")
 _POLLING_CONFLICT = threading.Event()
 NYC_TZ = pytz.timezone("America/New_York")
 _MAX_TRACKED_CHATS = 2_000
+# Allow arrivals up to 1 minute past to account for MTA feed latency (~30s updates).
+# These are clamped to 0m in display_minutes to avoid showing negative values.
 _FEED_LATENCY_TOLERANCE_MINUTES = -1
 _FEED_CACHE_TTL_SECONDS = 30
 _DEFAULT_RETRY_DELAY_SECONDS = 10
 _MAX_RETRY_DELAY_SECONDS = 120
+_MIN_REQUEST_INTERVAL_SECONDS = 2.0
+_HANDLER_TIMEOUT_SECONDS = 20
 
 # Official MTA GTFS-RT feeds by line.
 TRAIN_FEEDS: Dict[str, str] = {
@@ -88,11 +100,25 @@ TRAIN_FEEDS: Dict[str, str] = {
 }
 _ROUTE_ID_ALIASES: Dict[str, str] = {"GS": "S", "FS": "S", "H": "S"}
 
-STATION_CODE_TO_NAME: Dict[str, str] = {
-    code: name
-    for group in IMPORTANT_STATIONS.values()
-    for code, name in group.items()
-}
+def _build_code_to_name() -> Dict[str, str]:
+    """Build station alias -> human name map from the full alias set."""
+    flat_important: Dict[str, str] = {
+        code: name for group in IMPORTANT_STATIONS.values() for code, name in group.items()
+    }
+    result: Dict[str, str] = {}
+    for alias, prefixes in STATION_ALIAS_TO_STOP_PREFIXES.items():
+        if alias in flat_important:
+            result[alias] = flat_important[alias]
+            continue
+        if not prefixes:
+            continue
+        info = STATION_METADATA.get(prefixes[0])
+        if info and info["name"]:
+            result[alias] = info["name"]
+    return result
+
+
+STATION_CODE_TO_NAME: Dict[str, str] = _build_code_to_name()
 
 
 class _LRUDict(OrderedDict):
@@ -153,8 +179,7 @@ class FeedBatchCache:
         finally:
             current_time = time.monotonic()
             async with self._lock:
-                if self._in_flight.get(key) is task:
-                    self._in_flight.pop(key, None)
+                self._in_flight.pop(key, None)
                 if data:
                     self._entries[key] = FeedCacheEntry(fetched_at=current_time, data=dict(data))
                     self._entries = {
@@ -180,29 +205,20 @@ class FeedBatchCache:
                 payloads[feed_url] = content
         return payloads
 
-
-FEED_BATCH_CACHE = FeedBatchCache(ttl_seconds=_FEED_CACHE_TTL_SECONDS)
-_SHARED_SESSION: Optional[aiohttp.ClientSession] = None
-_SHARED_SESSION_LOCK = asyncio.Lock()
-
-
-async def get_shared_session() -> aiohttp.ClientSession:
-    """Return a shared aiohttp session for connection reuse."""
-    global _SHARED_SESSION
-    async with _SHARED_SESSION_LOCK:
-        if _SHARED_SESSION is None or _SHARED_SESSION.closed:
-            timeout = aiohttp.ClientTimeout(total=15)
-            _SHARED_SESSION = aiohttp.ClientSession(timeout=timeout)
-        return _SHARED_SESSION
+async def _on_startup(app: Application) -> None:
+    """Initialize per-application async resources."""
+    timeout = aiohttp.ClientTimeout(total=15)
+    app.bot_data["session"] = aiohttp.ClientSession(timeout=timeout)
+    app.bot_data["feed_cache"] = FeedBatchCache(ttl_seconds=_FEED_CACHE_TTL_SECONDS)
+    logger.info("aiohttp session created")
 
 
-async def close_shared_session() -> None:
-    """Close shared aiohttp session on shutdown."""
-    global _SHARED_SESSION
-    async with _SHARED_SESSION_LOCK:
-        if _SHARED_SESSION and not _SHARED_SESSION.closed:
-            await _SHARED_SESSION.close()
-        _SHARED_SESSION = None
+async def _on_shutdown(app: Application) -> None:
+    """Close per-application async resources."""
+    session: Optional[aiohttp.ClientSession] = app.bot_data.get("session")
+    if session and not session.closed:
+        await session.close()
+    logger.info("aiohttp session closed")
 
 
 def direction_from_stop_id(stop_id: str, gtfs_base_id: str = "") -> str:
@@ -291,7 +307,12 @@ async def _fetch_feed(
         return feed_url, None, (time.perf_counter() - fetch_started) * 1000
 
 
-async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[str, object]:
+async def fetch_mta_updates(
+    session: aiohttp.ClientSession,
+    feed_cache: FeedBatchCache,
+    station_code: str,
+    train_filter: str = "",
+) -> Dict[str, object]:
     """Fetch upcoming arrivals for a station, optionally filtered to one train line."""
     station_code = station_code.upper().strip()
     train_filter = train_filter.upper().strip()
@@ -352,8 +373,7 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
     north_label = "Uptown"
     south_label = "Downtown"
     fetch_batch_started = time.perf_counter()
-    session = await get_shared_session()
-    raw_payloads = await FEED_BATCH_CACHE.get_or_fetch(session, feed_urls, api_key)
+    raw_payloads = await feed_cache.get_or_fetch(session, feed_urls, api_key)
     fetch_batch_ms = (time.perf_counter() - fetch_batch_started) * 1000
 
     parse_started = time.perf_counter()
@@ -466,40 +486,46 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome and quick-start guidance."""
     del context
+    if not update.effective_message:
+        return
     message = (
         "<b>NYC Subway Arrival Bot</b>\n\n"
-        "<b>Commands</b>\n"
-        "• /next &lt;station_code&gt;\n"
-        "• /next &lt;train&gt; &lt;station_code&gt;\n"
-        "• /stationid\n"
-        "• /refresh\n"
-        "• /help\n\n"
+        f"{_commands_help_text()}\n\n"
         "<b>Render free-tier note</b>\n"
         "If the bot was idle, the first request can take up to 60 seconds due to a cold start while Render wakes the server.\n\n"
         "<b>Examples</b>\n"
         "/next 34SHS\n"
         "/next D 34SHS"
     )
-    await update.message.reply_text(message, parse_mode="HTML")
+    await update.effective_message.reply_text(message, parse_mode="HTML")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Explain command usage and station-code model."""
     del context
+    if not update.effective_message:
+        return
     message = (
         "<b>How this bot works</b>\n\n"
-        "Commands:\n"
+        f"{_commands_help_text()}\n\n"
+        "Train examples: A, D, Q, 2, 7\n"
+        "Station codes are short aliases such as 34SHS, TS42S, GC42S.\n"
+        "Use /stationid to browse all supported station codes."
+    )
+    await update.effective_message.reply_text(message, parse_mode="HTML")
+
+
+def _commands_help_text() -> str:
+    """Shared command list for /start and /help."""
+    return (
+        "<b>Commands</b>\n"
         "• /start - welcome message\n"
         "• /help - usage guide\n"
         "• /stationid - supported station codes\n"
         "• /refresh - rerun your last /next query\n"
         "• /next &lt;station_code&gt; - all trains at station, both directions\n"
-        "• /next &lt;train&gt; &lt;station_code&gt; - one train at station, both directions\n\n"
-        "Train examples: A, D, Q, 2, 7\n"
-        "Station codes are short aliases such as 34SHS, TS42S, GC42S.\n"
-        "Use /stationid to browse all supported station codes."
+        "• /next &lt;train&gt; &lt;station_code&gt; - one train at station, both directions"
     )
-    await update.message.reply_text(message, parse_mode="HTML")
 
 
 def _borough_keyboard() -> InlineKeyboardMarkup:
@@ -518,7 +544,9 @@ def _borough_keyboard() -> InlineKeyboardMarkup:
 async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show borough menu for station aliases."""
     del context
-    await update.message.reply_text(
+    if not update.effective_message:
+        return
+    await update.effective_message.reply_text(
         "Choose a borough to browse station aliases:",
         reply_markup=_borough_keyboard(),
     )
@@ -558,11 +586,11 @@ async def stationid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         body_parts.append(f"• <b>{escape(code)}</b> → {escape(name)}{annotation}")
 
     full_body = header + "\n".join(body_parts)
-    if len(full_body) > _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE):
+    if len(full_body) > _TG_SAFE_LIMIT:
         kept: List[str] = []
         running = len(header) + len(_TG_TRUNCATION_NOTE)
         for part in body_parts:
-            if running + len(part) + 1 > _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE):
+            if running + len(part) + 1 > _TG_SAFE_LIMIT:
                 break
             kept.append(part)
             running += len(part) + 1
@@ -588,6 +616,7 @@ _MAX_LINE_DISPLAY = 8
 _LINE_ANNOTATION_THRESHOLD = 2
 _TG_MSG_LIMIT = 4096
 _TG_TRUNCATION_NOTE = "\n\n<i>List truncated — use /next &lt;code&gt; to query any station.</i>"
+_TG_SAFE_LIMIT = _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE)
 _TERMINAL_LABELS = {"Last Stop", "Outbound"}
 
 
@@ -670,19 +699,18 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
 def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
     """Return closest known station aliases using fuzzy matching."""
     cleaned = input_alias.upper().strip()
-    if len(cleaned) < 3:
+    if len(cleaned) < 2:
         return []
     choices = list(STATION_ALIAS_TO_STOP_PREFIXES.keys())
     if not choices:
         return []
-    ranked = process.extract(cleaned, choices, limit=max_results)
-    return [alias for alias, score in ranked if score >= 80]
+    threshold = 60 if len(cleaned) <= 4 else 75
+    ranked = process.extract(cleaned, choices, limit=max_results, scorer=fuzz.partial_ratio)
+    return [alias for alias, score in ranked if score >= threshold]
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Repeat the most recent /next query for this chat."""
-    del context
-
     if not update.effective_chat:
         return
 
@@ -697,8 +725,14 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     train_filter, station_code = last_request
     logger.info("User requested /refresh train=%s station_code=%s", train_filter or "ALL", station_code)
+    session: Optional[aiohttp.ClientSession] = context.application.bot_data.get("session")
+    feed_cache: Optional[FeedBatchCache] = context.application.bot_data.get("feed_cache")
+    if not session or not feed_cache:
+        if update.effective_message:
+            await update.effective_message.reply_text("Bot is still starting up. Please try again.")
+        return
 
-    result = await fetch_mta_updates(station_code, train_filter)
+    result = await fetch_mta_updates(session, feed_cache, station_code, train_filter)
     if not result["ok"]:
         if update.effective_message:
             await update.effective_message.reply_text(str(result["error"]))
@@ -711,59 +745,109 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def next_train(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /next <station_code> or /next <train> <station_code> requests."""
-    if not context.args:
-        await update.message.reply_text(
-            "Missing parameters. Usage:\n"
-            "/next <station_code>\n"
-            "/next <train> <station_code>\n"
-            "Examples: /next 34SHS  or  /next D 34SHS"
+    message = update.effective_message
+    if not message:
+        return
+
+    try:
+        async with asyncio.timeout(_HANDLER_TIMEOUT_SECONDS):
+            if not context.args:
+                await message.reply_text(
+                    "Missing parameters. Usage:\n"
+                    "/next <station_code>\n"
+                    "/next <train> <station_code>\n"
+                    "Examples: /next 34SHS  or  /next D 34SHS"
+                )
+                return
+
+            train_filter = ""
+            station_code = ""
+
+            if len(context.args) == 1:
+                station_code = context.args[0]
+            elif len(context.args) == 2:
+                train_filter = context.args[0]
+                station_code = context.args[1]
+            else:
+                await message.reply_text(
+                    "Invalid parameters. Usage:\n"
+                    "/next <station_code>\n"
+                    "/next <train> <station_code>"
+                )
+                return
+
+            chat_id = update.effective_chat.id if update.effective_chat else None
+            if chat_id:
+                now = time.monotonic()
+                last = context.application.bot_data.setdefault("last_request_time", {}).get(chat_id, 0.0)
+                if now - last < _MIN_REQUEST_INTERVAL_SECONDS:
+                    return
+                context.application.bot_data["last_request_time"][chat_id] = now
+
+            logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
+
+            normalized_station = station_code.upper().strip()
+            if normalized_station not in STATION_ALIAS_TO_STOP_PREFIXES:
+                suggestions = build_station_suggestions(normalized_station)
+                suggestion_text = f" Try: {', '.join(suggestions)}." if suggestions else ""
+                await message.reply_text(
+                    f"Invalid station code '{normalized_station}'. Use /stationid to browse aliases.{suggestion_text}"
+                )
+                return
+
+            normalized_train_filter = train_filter.upper().strip()
+            if normalized_train_filter in _ROUTE_ID_ALIASES:
+                canonical = _ROUTE_ID_ALIASES[normalized_train_filter]
+                await message.reply_text(
+                    f"Note: {normalized_train_filter} is treated as the {canonical} shuttle train.\n"
+                    "To look up the Grand St station use: /next GS"
+                )
+
+            if update.effective_chat:
+                LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (normalized_train_filter, normalized_station)
+
+            session: Optional[aiohttp.ClientSession] = context.application.bot_data.get("session")
+            feed_cache: Optional[FeedBatchCache] = context.application.bot_data.get("feed_cache")
+            if not session or not feed_cache:
+                await message.reply_text("Bot is still starting up. Please try again.")
+                return
+
+            result = await fetch_mta_updates(session, feed_cache, station_code, normalized_train_filter)
+            if not result["ok"]:
+                await message.reply_text(str(result["error"]))
+                return
+
+            train_scope = str(result.get("train_filter", "")).upper()
+            response_text = build_arrival_message(result, train_scope)
+            await message.reply_text(response_text, parse_mode="HTML", reply_markup=refresh_reply_markup())
+    except TimeoutError:
+        await message.reply_text("Request timed out. Please try again.")
+
+
+async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route plain-text messages as implicit /next queries."""
+    message = update.effective_message
+    if not message or not message.text:
+        return
+
+    text = message.text.strip()
+    parts = text.split()
+    if len(parts) > 2 or not parts:
+        await message.reply_text(
+            "Send a station code or 'TRAIN STATION_CODE'. Example: 34SHS or N 34SHS.\n"
+            "Use /stationid to browse codes."
         )
         return
 
-    train_filter = ""
-    station_code = ""
-
-    if len(context.args) == 1:
-        station_code = context.args[0]
-    elif len(context.args) == 2:
-        train_filter = context.args[0]
-        station_code = context.args[1]
-    else:
-        await update.message.reply_text(
-            "Invalid parameters. Usage:\n"
-            "/next <station_code>\n"
-            "/next <train> <station_code>"
-        )
-        return
-
-    logger.info("User requested /next train=%s station_code=%s", train_filter or "ALL", station_code)
-
-    normalized_station = station_code.upper().strip()
-    if normalized_station not in STATION_ALIAS_TO_STOP_PREFIXES:
-        suggestions = build_station_suggestions(normalized_station)
-        suggestion_text = f" Try: {', '.join(suggestions)}." if suggestions else ""
-        await update.message.reply_text(
-            f"Invalid station code '{normalized_station}'. Use /stationid to browse aliases.{suggestion_text}"
-        )
-        return
-
-    if update.effective_chat:
-        LAST_REQUEST_BY_CHAT[update.effective_chat.id] = (train_filter, normalized_station)
-
-    result = await fetch_mta_updates(station_code, train_filter)
-    if not result["ok"]:
-        await update.message.reply_text(str(result["error"]))
-        return
-
-    train_scope = str(result.get("train_filter", "")).upper()
-    message = build_arrival_message(result, train_scope)
-    await update.message.reply_text(message, parse_mode="HTML", reply_markup=refresh_reply_markup())
+    context.args = parts
+    await next_train(update, context)
 
 
 
 async def handle_application_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle uncaught handler/runtime errors from python-telegram-bot."""
     if isinstance(context.error, Conflict):
+        # Intentionally use a threading.Event from async handler code to signal synchronous main().
         _POLLING_CONFLICT.set()
         logger.error(
             "Telegram polling conflict detected (409). "
@@ -811,76 +895,80 @@ def main() -> None:
 
     attempt = 0
 
-    try:
-        while True:
-            attempt += 1
-            _POLLING_CONFLICT.clear()
-            logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
-            run_started = time.monotonic()
+    while True:
+        attempt += 1
+        _POLLING_CONFLICT.clear()
+        logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
+        run_started = time.monotonic()
 
-            app = Application.builder().token(token).build()
-            app.add_handler(CommandHandler("start", start_command))
-            app.add_handler(CommandHandler("help", help_command))
-            app.add_handler(CommandHandler("stationid", stationid_command))
-            app.add_handler(CallbackQueryHandler(stationid_callback, pattern=r"^stationid:"))
-            app.add_handler(CommandHandler("next", next_train))
-            app.add_handler(CommandHandler("refresh", refresh_command))
-            app.add_error_handler(handle_application_error)
+        app = (
+            Application.builder()
+            .token(token)
+            .post_init(_on_startup)
+            .post_shutdown(_on_shutdown)
+            .build()
+        )
+        app.add_handler(CommandHandler("start", start_command))
+        app.add_handler(CommandHandler("help", help_command))
+        app.add_handler(CommandHandler("stationid", stationid_command))
+        app.add_handler(CallbackQueryHandler(stationid_callback, pattern=r"^stationid:"))
+        app.add_handler(CommandHandler("next", next_train))
+        app.add_handler(CommandHandler("refresh", refresh_command))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
+        app.add_error_handler(handle_application_error)
 
-            try:
-                if webhook_base_url:
-                    port = int(os.getenv("PORT", "10000"))
-                    webhook_url = f"{webhook_base_url}/{webhook_path}"
-                    logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
-                    try:
-                        app.run_webhook(
-                            listen="0.0.0.0",
-                            port=port,
-                            url_path=webhook_path,
-                            webhook_url=webhook_url,
-                            drop_pending_updates=drop_pending_updates,
-                        )
-                    except RuntimeError as exc:
-                        if "python-telegram-bot[webhooks]" not in str(exc):
-                            raise
-                        logger.warning(
-                            "Webhook dependencies are missing; falling back to polling mode. "
-                            "Install with: pip install 'python-telegram-bot[webhooks]'."
-                        )
-                        app.run_polling(drop_pending_updates=drop_pending_updates)
-                else:
-                    app.run_polling(drop_pending_updates=drop_pending_updates)
-                run_duration_seconds = time.monotonic() - run_started
-                if run_duration_seconds > 60:
-                    current_retry_delay = retry_delay_seconds
-                if _POLLING_CONFLICT.is_set():
-                    logger.warning(
-                        "Polling stopped due to Telegram conflict; retrying in %s seconds.",
-                        retry_delay_seconds,
+        try:
+            if webhook_base_url:
+                port = int(os.getenv("PORT", "10000"))
+                webhook_url = f"{webhook_base_url}/{webhook_path}"
+                logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
+                try:
+                    app.run_webhook(
+                        listen="0.0.0.0",
+                        port=port,
+                        url_path=webhook_path,
+                        webhook_url=webhook_url,
+                        drop_pending_updates=drop_pending_updates,
                     )
-                    time.sleep(retry_delay_seconds)
-                    continue
-                logger.info("Bot polling stopped gracefully.")
-                break
-            except Conflict:
-                logger.exception(
-                    "Telegram conflict during startup/polling. Retrying in %s seconds.",
+                except RuntimeError as exc:
+                    if "python-telegram-bot[webhooks]" not in str(exc):
+                        raise
+                    logger.error(
+                        "Webhook dependencies are missing and fallback to polling is disabled for safety. "
+                        "Install with: pip install 'python-telegram-bot[webhooks]'."
+                    )
+                    raise
+            else:
+                app.run_polling(drop_pending_updates=drop_pending_updates)
+            run_duration_seconds = time.monotonic() - run_started
+            if run_duration_seconds > 60:
+                current_retry_delay = retry_delay_seconds
+            if _POLLING_CONFLICT.is_set():
+                logger.warning(
+                    "Polling stopped due to Telegram conflict; retrying in %s seconds.",
                     retry_delay_seconds,
                 )
                 time.sleep(retry_delay_seconds)
-            except (TimedOut, NetworkError):
-                logger.exception(
-                    "Telegram API was temporarily unreachable during startup/polling. "
-                    "Retrying in %s seconds.",
-                    current_retry_delay,
-                )
-                if max_retries > 0 and attempt >= max_retries:
-                    logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
-                    raise
-                time.sleep(current_retry_delay)
-                current_retry_delay = min(current_retry_delay * 2, _MAX_RETRY_DELAY_SECONDS)
-    finally:
-        asyncio.run(close_shared_session())
+                continue
+            logger.info("Bot polling stopped gracefully.")
+            break
+        except Conflict:
+            logger.exception(
+                "Telegram conflict during startup/polling. Retrying in %s seconds.",
+                retry_delay_seconds,
+            )
+            time.sleep(retry_delay_seconds)
+        except (TimedOut, NetworkError):
+            logger.exception(
+                "Telegram API was temporarily unreachable during startup/polling. "
+                "Retrying in %s seconds.",
+                current_retry_delay,
+            )
+            if max_retries > 0 and attempt >= max_retries:
+                logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
+                raise
+            time.sleep(current_retry_delay)
+            current_retry_delay = min(current_retry_delay * 2, _MAX_RETRY_DELAY_SECONDS)
 
 
 if __name__ == "__main__":
