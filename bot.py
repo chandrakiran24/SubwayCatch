@@ -79,10 +79,14 @@ TRAIN_FEEDS: Dict[str, str] = {
     "7": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "S": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "GS": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "FS": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "H": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
+    "SI": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si",
     "5X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "6X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
     "7X": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs",
 }
+_ROUTE_ID_ALIASES: Dict[str, str] = {"GS": "S", "FS": "S", "H": "S"}
 
 STATION_CODE_TO_NAME: Dict[str, str] = {
     code: name
@@ -107,7 +111,7 @@ class _LRUDict(OrderedDict):
 
 LAST_REQUEST_BY_CHAT: _LRUDict = _LRUDict(_MAX_TRACKED_CHATS)
 
-VALID_TRAINS_TEXT = "A,B,C,D,E,F,G,GS,J,L,S,Z,N,Q,R,W,1,2,3,4,5,5X,6,6X,7,7X"
+VALID_TRAINS_TEXT = "A,B,C,D,E,F,FS,G,GS,H,J,L,N,Q,R,S,SI,W,Z,1,2,3,4,5,5X,6,6X,7,7X"
 
 @dataclass
 class FeedCacheEntry:
@@ -143,20 +147,21 @@ class FeedBatchCache:
 
         try:
             data = await task
+        except Exception:  # noqa: BLE001 - avoid surfacing shared task exceptions to handlers
+            data = {}
+            logger.exception("Feed fetch task failed for key=%s", key)
         finally:
+            current_time = time.monotonic()
             async with self._lock:
                 if self._in_flight.get(key) is task:
                     self._in_flight.pop(key, None)
-
-        if data:
-            async with self._lock:
-                current_time = time.monotonic()
-                self._entries[key] = FeedCacheEntry(fetched_at=current_time, data=dict(data))
-                self._entries = {
-                    existing_key: entry
-                    for existing_key, entry in self._entries.items()
-                    if current_time - entry.fetched_at <= self._ttl_seconds
-                }
+                if data:
+                    self._entries[key] = FeedCacheEntry(fetched_at=current_time, data=dict(data))
+                    self._entries = {
+                        existing_key: entry
+                        for existing_key, entry in self._entries.items()
+                        if current_time - entry.fetched_at <= self._ttl_seconds
+                    }
         return dict(data)
 
     async def _fetch_batch(self, session: aiohttp.ClientSession, feed_urls: List[str], api_key: str) -> Dict[str, bytes]:
@@ -202,20 +207,17 @@ async def close_shared_session() -> None:
 
 def direction_from_stop_id(stop_id: str, gtfs_base_id: str = "") -> str:
     """Infer user-facing direction label from stop suffix + station metadata."""
-    suffix = ""
     if stop_id.endswith("N"):
         suffix = "north"
     elif stop_id.endswith("S"):
         suffix = "south"
-    if suffix and gtfs_base_id:
+    else:
+        return ""
+    if gtfs_base_id:
         labels = get_direction_labels(gtfs_base_id)
         if labels and labels.get(suffix):
             return str(labels[suffix]).title()
-    if suffix == "north":
-        return "Uptown"
-    if suffix == "south":
-        return "Downtown"
-    return "Unknown"
+    return "Uptown" if suffix == "north" else "Downtown"
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -311,7 +313,7 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
         return {"ok": False, "error": "Server misconfiguration: MTA_API_KEY is missing."}
 
     stop_id_prefixes = STATION_ALIAS_TO_STOP_PREFIXES[station_code]
-    stop_id_prefix_set = set(stop_id_prefixes)
+    gtfs_base_ids: Set[str] = set(stop_id_prefixes)
     if train_filter:
         feeds_for_request = {TRAIN_FEEDS[train_filter]}
     else:
@@ -322,7 +324,15 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
                 serving_routes.update(station_info["routes"])
         feeds_for_request = {TRAIN_FEEDS[route] for route in serving_routes if route in TRAIN_FEEDS}
         if not feeds_for_request:
-            feeds_for_request = set(TRAIN_FEEDS.values())
+            logger.error(
+                "No feeds found for station_code=%s stop_prefixes=%s; check route entries in stations.json",
+                station_code,
+                stop_id_prefixes,
+            )
+            return {
+                "ok": False,
+                "error": "Station data is incomplete. Please report this to the bot administrator.",
+            }
     feed_urls: List[str] = sorted(feeds_for_request)
 
     logger.info("Fetching MTA feeds for station_code=%s train_filter=%s", station_code, train_filter or "ALL")
@@ -366,19 +376,24 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
             train = trip_update.trip.route_id.upper().strip() if trip_update.trip.route_id else ""
             if train not in TRAIN_FEEDS:
                 continue
-            if train_filter and train != train_filter:
+            canonical_train = _ROUTE_ID_ALIASES.get(train, train)
+            if train_filter and canonical_train != train_filter and train != train_filter:
                 continue
 
             for stu in trip_update.stop_time_update:
                 stop_id = stu.stop_id.upper() if stu.stop_id else ""
+                if len(stop_id) < 2:
+                    continue
                 stop_base = stop_id[:-1] if stop_id and stop_id[-1] in {"N", "S"} else stop_id
-                if stop_base not in stop_id_prefix_set:
+                if stop_base not in gtfs_base_ids:
                     continue
 
                 direction_key = "north" if stop_id.endswith("N") else "south" if stop_id.endswith("S") else ""
                 if not direction_key:
                     continue
                 direction = direction_from_stop_id(stop_id, stop_base)
+                if not direction:
+                    continue
                 if direction_key == "north":
                     north_label = direction
                 else:
@@ -393,7 +408,7 @@ async def fetch_mta_updates(station_code: str, train_filter: str = "") -> Dict[s
                     continue
                 display_minutes = max(0, minutes)
 
-                arrivals.append((display_minutes, direction_key, train, arrival_dt.strftime("%I:%M %p")))
+                arrivals.append((display_minutes, direction_key, canonical_train, arrival_dt.strftime("%I:%M %p")))
 
         for entity in feed.entity:
             if not entity.HasField("alert"):
@@ -510,12 +525,12 @@ async def stationid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def stationid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle borough menu callbacks for /stationid with sorted and annotated output."""
-    del context
+    """Handle borough menu callbacks for /stationid with geographic sort and line annotations."""
     query = update.callback_query
     if not query or not query.data:
         return
     await query.answer()
+
     borough = query.data.split(":", maxsplit=1)[-1]
     stations = IMPORTANT_STATIONS.get(borough)
     if not stations:
@@ -525,36 +540,76 @@ async def stationid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     geo_order: List[str] = BOROUGH_STATION_ORDER.get(borough, [])
     rank: Dict[str, int] = {alias: i for i, alias in enumerate(geo_order)}
     fallback_start = len(geo_order)
-    sorted_codes: List[str] = sorted(stations.keys(), key=lambda code: (rank.get(code, fallback_start), code))
+    sorted_codes: List[str] = sorted(
+        stations.keys(),
+        key=lambda code: (rank.get(code, fallback_start), code),
+    )
 
-    header = f"<b>{escape(borough)} stations — downtown to uptown</b>\n"
+    header = f"<b>{escape(borough)} — downtown to uptown</b>\n"
+
     body_parts: List[str] = []
     for code in sorted_codes:
         name = stations[code]
         lines_here = get_lines_for_alias(code)
-        is_complex_hub = get_complex_for_alias(code) is not None
+        is_hub = get_complex_for_alias(code) is not None
 
-        annotation = ""
-        if is_complex_hub:
-            annotation = f" <i>({escape(_format_lines(lines_here))} — transfer hub)</i>"
+        if is_hub:
+            annotation = f" ({escape(_format_lines(lines_here))} — transfer hub)"
         elif len(lines_here) >= _LINE_ANNOTATION_THRESHOLD:
-            annotation = f" <i>({escape(_format_lines(lines_here))})</i>"
+            annotation = f" ({escape(_format_lines(lines_here))})"
+        else:
+            annotation = ""
 
         body_parts.append(f"• <b>{escape(code)}</b> → {escape(name)}{annotation}")
 
-    full_body = header + "\n".join(body_parts)
-    if len(full_body) > _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE):
-        kept: List[str] = []
-        running = len(header) + len(_TG_TRUNCATION_NOTE)
-        for part in body_parts:
-            if running + len(part) + 1 > _TG_MSG_LIMIT - len(_TG_TRUNCATION_NOTE):
-                break
-            kept.append(part)
-            running += len(part) + 1
-        full_body = header + "\n".join(kept) + _TG_TRUNCATION_NOTE
+    full_text = header + "\n".join(body_parts)
+    if len(full_text) <= _TG_MSG_LIMIT:
+        await query.edit_message_text(
+            full_text,
+            parse_mode="HTML",
+            reply_markup=_borough_keyboard(),
+        )
+        return
+
+    mid = len(body_parts) // 2
+    page_one = header + "\n".join(body_parts[:mid]) + "\n\n<i>Continued — tap 'More' below.</i>"
+    page_two = f"<b>{escape(borough)} (continued)</b>\n" + "\n".join(body_parts[mid:])
+
+    more_button = InlineKeyboardButton(
+        f"{borough} (more →)",
+        callback_data=f"stationid_p2:{borough}",
+    )
+    keyboard = _borough_keyboard()
+    keyboard = InlineKeyboardMarkup([[more_button]] + keyboard.inline_keyboard)
+    context.bot_data[f"stationid_p2_{borough}"] = page_two
 
     await query.edit_message_text(
-        full_body,
+        page_one,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+async def stationid_page2_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Serve the second page of a long station list."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+
+    borough = query.data.split(":", maxsplit=1)[-1]
+    page_two = str(context.bot_data.get(f"stationid_p2_{borough}", ""))
+    if not page_two:
+        await query.edit_message_text(
+            "Session expired. Please run /stationid again.",
+            reply_markup=_borough_keyboard(),
+        )
+        return
+
+    await query.edit_message_text(
+        page_two,
         parse_mode="HTML",
         reply_markup=_borough_keyboard(),
     )
@@ -572,7 +627,7 @@ def refresh_reply_markup() -> ReplyKeyboardMarkup:
 _MAX_LINE_DISPLAY = 8
 _LINE_ANNOTATION_THRESHOLD = 2
 _TG_MSG_LIMIT = 4096
-_TG_TRUNCATION_NOTE = "\n\n<i>List truncated — use /next &lt;code&gt; to query any station.</i>"
+_TERMINAL_LABELS = {"Last Stop", "Outbound"}
 
 
 def _format_lines(lines: List[str], cap: int = _MAX_LINE_DISPLAY) -> str:
@@ -611,26 +666,34 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
     msg_lines.append("")
     north_label = escape(str(result.get("north_label", "Uptown")))
     south_label = escape(str(result.get("south_label", "Downtown")))
-    msg_lines.append(f"<b>{north_label} (next 2 per train)</b>")
-    if result["uptown_by_train"]:
-        for train, arrivals in result["uptown_by_train"].items():
-            formatted = ", ".join(
-                f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
-            )
-            msg_lines.append(f"• <b>{escape(train)}</b>: {formatted}")
-    else:
-        msg_lines.append("• No upcoming trains")
+    north_label_raw = str(result.get("north_label", "Uptown"))
+    south_label_raw = str(result.get("south_label", "Downtown"))
+    show_north = bool(result["uptown_by_train"]) or north_label_raw not in _TERMINAL_LABELS
+    show_south = bool(result["downtown_by_train"]) or south_label_raw not in _TERMINAL_LABELS
 
-    msg_lines.append("")
-    msg_lines.append(f"<b>{south_label} (next 2 per train)</b>")
-    if result["downtown_by_train"]:
-        for train, arrivals in result["downtown_by_train"].items():
-            formatted = ", ".join(
-                f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
-            )
-            msg_lines.append(f"• <b>{escape(train)}</b>: {formatted}")
-    else:
-        msg_lines.append("• No upcoming trains")
+    if show_north:
+        msg_lines.append(f"<b>{north_label} (next 2 per train)</b>")
+        if result["uptown_by_train"]:
+            for train, arrivals in result["uptown_by_train"].items():
+                formatted = ", ".join(
+                    f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
+                )
+                msg_lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+        else:
+            msg_lines.append("• No upcoming trains")
+        msg_lines.append("")
+
+    if show_south:
+        msg_lines.append(f"<b>{south_label} (next 2 per train)</b>")
+        if result["downtown_by_train"]:
+            for train, arrivals in result["downtown_by_train"].items():
+                formatted = ", ".join(
+                    f"{int(minutes)}m ({escape(local_time)})" for minutes, local_time in arrivals
+                )
+                msg_lines.append(f"• <b>{escape(train)}</b>: {formatted}")
+        else:
+            msg_lines.append("• No upcoming trains")
+        msg_lines.append("")
 
     msg_lines.append("")
     msg_lines.append("<b>Service Status</b>")
@@ -645,20 +708,14 @@ def build_arrival_message(result: Dict[str, object], train_scope: str = "") -> s
 
 def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
     """Return closest known station aliases using fuzzy matching."""
+    cleaned = input_alias.upper().strip()
+    if len(cleaned) < 3:
+        return []
     choices = list(STATION_ALIAS_TO_STOP_PREFIXES.keys())
     if not choices:
         return []
-    ranked = process.extract(input_alias.upper().strip(), choices, limit=max_results)
-    return [alias for alias, score in ranked if score >= 75]
-
-
-def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[str]:
-    """Return closest known station aliases using fuzzy matching."""
-    choices = list(STATION_ALIAS_TO_STOP_PREFIXES.keys())
-    if not choices:
-        return []
-    ranked = process.extract(input_alias.upper().strip(), choices, limit=max_results)
-    return [alias for alias, score in ranked if score >= 75]
+    ranked = process.extract(cleaned, choices, limit=max_results)
+    return [alias for alias, score in ranked if score >= 80]
 
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -793,80 +850,77 @@ def main() -> None:
 
     attempt = 0
 
-    while True:
-        attempt += 1
-        _POLLING_CONFLICT.clear()
-        logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
+    try:
+        while True:
+            attempt += 1
+            _POLLING_CONFLICT.clear()
+            logger.info("Starting NYC Subway Arrival Bot (attempt %s)", attempt)
+            run_started = time.monotonic()
 
-        app = Application.builder().token(token).build()
-        app.add_handler(CommandHandler("start", start_command))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(CommandHandler("stationid", stationid_command))
-        app.add_handler(CallbackQueryHandler(stationid_callback, pattern=r"^stationid:"))
-        app.add_handler(CommandHandler("next", next_train))
-        app.add_handler(CommandHandler("refresh", refresh_command))
-        app.add_error_handler(handle_application_error)
+            app = Application.builder().token(token).build()
+            app.add_handler(CommandHandler("start", start_command))
+            app.add_handler(CommandHandler("help", help_command))
+            app.add_handler(CommandHandler("stationid", stationid_command))
+            app.add_handler(CallbackQueryHandler(stationid_callback, pattern=r"^stationid:"))
+            app.add_handler(CallbackQueryHandler(stationid_page2_callback, pattern=r"^stationid_p2:"))
+            app.add_handler(CommandHandler("next", next_train))
+            app.add_handler(CommandHandler("refresh", refresh_command))
+            app.add_error_handler(handle_application_error)
 
-        try:
-            if webhook_base_url:
-                port = int(os.getenv("PORT", "10000"))
-                webhook_url = f"{webhook_base_url}/{webhook_path}"
-                logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
-                try:
-                    app.run_webhook(
-                        listen="0.0.0.0",
-                        port=port,
-                        url_path=webhook_path,
-                        webhook_url=webhook_url,
-                        drop_pending_updates=drop_pending_updates,
-                    )
-                except RuntimeError as exc:
-                    if "python-telegram-bot[webhooks]" not in str(exc):
-                        raise
-                    logger.warning(
-                        "Webhook dependencies are missing; falling back to polling mode. "
-                        "Install with: pip install 'python-telegram-bot[webhooks]'."
-                    )
+            try:
+                if webhook_base_url:
+                    port = int(os.getenv("PORT", "10000"))
+                    webhook_url = f"{webhook_base_url}/{webhook_path}"
+                    logger.info("Starting webhook mode on port=%s webhook_url=%s", port, webhook_url)
+                    try:
+                        app.run_webhook(
+                            listen="0.0.0.0",
+                            port=port,
+                            url_path=webhook_path,
+                            webhook_url=webhook_url,
+                            drop_pending_updates=drop_pending_updates,
+                        )
+                    except RuntimeError as exc:
+                        if "python-telegram-bot[webhooks]" not in str(exc):
+                            raise
+                        logger.warning(
+                            "Webhook dependencies are missing; falling back to polling mode. "
+                            "Install with: pip install 'python-telegram-bot[webhooks]'."
+                        )
+                        app.run_polling(drop_pending_updates=drop_pending_updates)
+                else:
                     app.run_polling(drop_pending_updates=drop_pending_updates)
-            else:
-                app.run_polling(drop_pending_updates=drop_pending_updates)
-            if _POLLING_CONFLICT.is_set():
-                logger.warning(
-                    "Polling stopped due to Telegram conflict; retrying in %s seconds.",
+                run_duration_seconds = time.monotonic() - run_started
+                if run_duration_seconds > 60:
+                    current_retry_delay = retry_delay_seconds
+                if _POLLING_CONFLICT.is_set():
+                    logger.warning(
+                        "Polling stopped due to Telegram conflict; retrying in %s seconds.",
+                        retry_delay_seconds,
+                    )
+                    time.sleep(retry_delay_seconds)
+                    continue
+                logger.info("Bot polling stopped gracefully.")
+                break
+            except Conflict:
+                logger.exception(
+                    "Telegram conflict during startup/polling. Retrying in %s seconds.",
                     retry_delay_seconds,
                 )
                 time.sleep(retry_delay_seconds)
-                continue
-            logger.info("Bot polling stopped gracefully.")
-            current_retry_delay = retry_delay_seconds
-            break
-        except Conflict:
-            logger.exception(
-                "Telegram conflict during startup/polling. Retrying in %s seconds.",
-                retry_delay_seconds,
-            )
-            time.sleep(retry_delay_seconds)
-        except (TimedOut, NetworkError):
-            logger.exception(
-                "Telegram API was temporarily unreachable during startup/polling. "
-                "Retrying in %s seconds.",
-                current_retry_delay,
-            )
-            if max_retries > 0 and attempt >= max_retries:
-                logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
-                raise
-            time.sleep(current_retry_delay)
-            current_retry_delay = min(current_retry_delay * 2, _MAX_RETRY_DELAY_SECONDS)
-        finally:
-            try:
-                if app.running:
-                    cleanup_loop = asyncio.new_event_loop()
-                    cleanup_loop.run_until_complete(app.shutdown())
-                    cleanup_loop.close()
-            except Exception:
-                logger.exception("Best-effort app.shutdown() failed during restart cleanup.")
-
-    asyncio.run(close_shared_session())
+            except (TimedOut, NetworkError):
+                logger.exception(
+                    "Telegram API was temporarily unreachable during startup/polling. "
+                    "Retrying in %s seconds.",
+                    current_retry_delay,
+                )
+                if max_retries > 0 and attempt >= max_retries:
+                    logger.error("Reached BOT_STARTUP_MAX_RETRIES=%s. Exiting.", max_retries)
+                    raise
+                time.sleep(current_retry_delay)
+                current_retry_delay = min(current_retry_delay * 2, _MAX_RETRY_DELAY_SECONDS)
+    finally:
+        asyncio.run(close_shared_session())
 
 
 if __name__ == "__main__":

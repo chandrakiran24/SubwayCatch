@@ -2755,7 +2755,8 @@
     "name": "Franklin Av",
     "north": "Last Stop",
     "routes": [
-      "S"
+      "S",
+      "FS"
     ],
     "south": "Prospect Park"
   },
@@ -2763,7 +2764,8 @@
     "name": "Park Pl",
     "north": "Franklin Av",
     "routes": [
-      "S"
+      "S",
+      "FS"
     ],
     "south": "Prospect Park"
   },
@@ -2771,7 +2773,8 @@
     "name": "Botanic Garden",
     "north": "Franklin Av",
     "routes": [
-      "S"
+      "S",
+      "FS"
     ],
     "south": "Prospect Park"
   }
