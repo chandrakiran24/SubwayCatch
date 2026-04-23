@@ -711,8 +711,6 @@ def build_station_suggestions(input_alias: str, max_results: int = 5) -> List[st
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Repeat the most recent /next query for this chat."""
-    del context
-
     if not update.effective_chat:
         return
 
